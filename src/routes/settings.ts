@@ -1,13 +1,40 @@
 import express, { Router } from 'express';
+import { statfs } from 'fs/promises';
 import { HARD_MAX_SIZE_MB } from '../config.js';
+import { pool } from '../db.js';
 import { requireAuth, requireMaster } from '../session.js';
 import { getServerMaxMb, setServerMaxMb } from '../settings.js';
 
 const router = Router();
 router.use('/api/settings', requireAuth, requireMaster, express.json({ limit: '1kb' }));
 
+/** Disk space of the filesystem the server runs on. In Docker this is the host disk that holds the database volume. */
+async function diskSpace(): Promise<{ freeBytes: number; totalBytes: number } | null> {
+  try {
+    const s = await statfs(process.cwd());
+    return { freeBytes: s.bavail * s.bsize, totalBytes: s.blocks * s.bsize };
+  } catch {
+    return null;
+  }
+}
+
 router.get('/api/settings', async (_req, res) => {
-  res.json({ maxSizeMb: await getServerMaxMb(), hardMaxSizeMb: HARD_MAX_SIZE_MB });
+  const [maxSizeMb, disk, usage] = await Promise.all([
+    getServerMaxMb(),
+    diskSpace(),
+    pool.query(
+      'SELECT COALESCE((SELECT sum(size) FROM files), 0)::float8 AS files, pg_database_size(current_database())::float8 AS db',
+    ),
+  ]);
+  res.json({
+    maxSizeMb,
+    hardMaxSizeMb: HARD_MAX_SIZE_MB,
+    storage: {
+      disk,
+      filesBytes: usage.rows[0].files,
+      databaseBytes: usage.rows[0].db,
+    },
+  });
 });
 
 router.patch('/api/settings', async (req, res) => {

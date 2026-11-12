@@ -12,6 +12,7 @@
 {{#if admin}}
 <h2>Server settings</h2>
 <p class="meta">The largest file anyone can upload, the master included. Guests with a lower limit keep it. Files are held in memory while transferring, so keep this reasonable on small servers.</p>
+<p id="space" class="meta"></p>
 <form id="settingsForm" class="row">
   <input id="smax" type="number" min="1" max="1000" step="1" placeholder="Maximum file size (MB)" required>
   <button>Save</button>

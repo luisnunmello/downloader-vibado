@@ -222,6 +222,12 @@ if ($('settingsForm')) {
   const showSettings = (s) => {
     $('smax').value = s.maxSizeMb;
     $('smax').max = s.hardMaxSizeMb;
+    if (!s.storage) return;
+    const { disk, filesBytes, databaseBytes } = s.storage;
+    const parts = [];
+    if (disk) parts.push(`Server disk: ${fmtSize(disk.freeBytes)} free of ${fmtSize(disk.totalBytes)}`);
+    parts.push(`files stored: ${fmtSize(filesBytes)}`, `database size: ${fmtSize(databaseBytes)}`);
+    $('space').textContent = parts.join(' - ');
   };
   $('settingsForm').addEventListener('submit', (e) => {
     e.preventDefault();
