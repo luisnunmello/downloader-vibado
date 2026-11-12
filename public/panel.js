@@ -110,7 +110,7 @@ function fileCard(file) {
         if (name !== null) await edit({ name });
       }),
       button(file.passwordless ? 'Set password' : 'Change password', async () => {
-        const downloadPassword = prompt('New download password (min 4 characters)');
+        const downloadPassword = prompt('New download password');
         if (downloadPassword !== null) await edit({ downloadPassword });
       }),
       !file.passwordless &&
@@ -146,7 +146,10 @@ async function loadFiles() {
 function guestCard(guest) {
   const size = guest.maxSizeMb === null ? 'default' : `${guest.maxSizeMb} MB`;
   const expiry = guest.maxExpiryMinutes === null ? 'no limit' : fmtMinutes(guest.maxExpiryMinutes);
-  const maxFiles = guest.maxFiles === null ? 'no limit' : guest.maxFiles;
+  const storage =
+    guest.maxTotalMb === null
+      ? `${fmtSize(guest.usedBytes)} used, no limit`
+      : `${fmtSize(guest.usedBytes)} of ${guest.maxTotalMb} MB used`;
 
   const sizeInput = h('input', {
     type: 'number',
@@ -156,25 +159,25 @@ function guestCard(guest) {
     placeholder: 'Max file size (MB, empty = default)',
     value: guest.maxSizeMb ?? '',
   });
-  const filesInput = h('input', {
+  const totalInput = h('input', {
     type: 'number',
     min: '1',
     step: '1',
-    placeholder: 'Max number of files (empty = no limit)',
-    value: guest.maxFiles ?? '',
+    placeholder: 'Total storage (MB, empty = no limit)',
+    value: guest.maxTotalMb ?? '',
   });
   const picker = expiryPicker(guest.maxExpiryMinutes);
   const editor = h(
     'div',
     { class: 'editor row' },
     sizeInput,
-    filesInput,
+    totalInput,
     h('div', { class: 'field' }, h('span', { class: 'meta' }, 'Max expiry'), picker.el),
     button('Save', async () => {
       await api('PATCH', `/guests/${guest.id}`, {
         maxSizeMb: numberOrNull(sizeInput.value),
         maxExpiryMinutes: picker.value(),
-        maxFiles: numberOrNull(filesInput.value),
+        maxTotalMb: numberOrNull(totalInput.value),
       });
       await loadGuests();
     }),
@@ -186,13 +189,14 @@ function guestCard(guest) {
     { class: 'card' },
     h('strong', {}, guest.name),
     h('div', { class: 'meta' }, `Created ${fmtDate(guest.createdAt)}`),
-    h('div', { class: 'meta' }, `Max file size: ${size} - Max expiry: ${expiry} - Max files: ${maxFiles}`),
+    h('div', { class: 'meta' }, `Max file size: ${size} - Max expiry: ${expiry}`),
+    h('div', { class: 'meta' }, `Storage: ${storage}`),
     h(
       'div',
       { class: 'actions' },
       button('Limits', async () => (editor.hidden = !editor.hidden)),
       button('Reset password', async () => {
-        const password = prompt(`New password for ${guest.name} (min 4 characters)`);
+        const password = prompt(`New password for ${guest.name}`);
         if (password !== null) await api('PATCH', `/guests/${guest.id}`, { password });
       }),
       button(
@@ -226,7 +230,7 @@ if ($('guestForm')) {
         password: $('gpw').value,
         maxSizeMb: numberOrNull($('gsize').value),
         maxExpiryMinutes: createPicker.value(),
-        maxFiles: numberOrNull($('gfiles').value),
+        maxTotalMb: numberOrNull($('gtotal').value),
       });
       $('guestForm').reset();
       // reset() restores the picker's selects, but its custom fields must re-hide too.

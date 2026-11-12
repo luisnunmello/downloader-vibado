@@ -51,33 +51,34 @@ export const isToken = (t: string): boolean => /^[A-Za-z0-9_-]{32}$/.test(t);
 // Expired files are treated as gone even before the cleanup job removes them.
 const LIVE = '(expires_at IS NULL OR expires_at > now())';
 
-/** Number of a guest's files that have not expired. */
-export async function countLiveFiles(guestId: number): Promise<number> {
-  const { rows } = await pool.query<{ n: string }>(`SELECT count(*) AS n FROM files WHERE guest_id = $1 AND ${LIVE}`, [
-    guestId,
-  ]);
-  return Number(rows[0].n);
+/** Bytes used by a guest's files that have not expired. */
+export async function storageUsed(guestId: number): Promise<number> {
+  const { rows } = await pool.query<{ used: string }>(
+    `SELECT coalesce(sum(size), 0) AS used FROM files WHERE guest_id = $1 AND ${LIVE}`,
+    [guestId],
+  );
+  return Number(rows[0].used);
 }
 
 /**
- * Stores a file. Returns null, storing nothing, if it would take the guest over `maxFiles`.
- * The guest's row is locked so simultaneous uploads cannot slip past the limit.
+ * Stores a file. Returns null, storing nothing, if it would take the guest over `maxTotalBytes`.
+ * The guest's row is locked so simultaneous uploads cannot slip past the quota.
  */
 export async function insertFile(
   file: NewFile,
-  maxFiles: number | null,
+  maxTotalBytes: number | null,
 ): Promise<{ token: string; expiresAt: Date | null } | null> {
   const token = crypto.randomBytes(24).toString('base64url');
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
-    if (file.guestId !== null && maxFiles !== null) {
+    if (file.guestId !== null && maxTotalBytes !== null) {
       await client.query('SELECT 1 FROM guests WHERE id = $1 FOR UPDATE', [file.guestId]);
-      const { rows: count } = await client.query<{ n: string }>(
-        `SELECT count(*) AS n FROM files WHERE guest_id = $1 AND ${LIVE}`,
+      const { rows: used } = await client.query<{ used: string }>(
+        `SELECT coalesce(sum(size), 0) AS used FROM files WHERE guest_id = $1 AND ${LIVE}`,
         [file.guestId],
       );
-      if (Number(count[0].n) >= maxFiles) {
+      if (Number(used[0].used) + file.data.length > maxTotalBytes) {
         await client.query('ROLLBACK');
         return null;
       }

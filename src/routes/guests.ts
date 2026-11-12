@@ -2,10 +2,10 @@ import express, { Router } from 'express';
 import { HARD_MAX_SIZE_MB, MAX_EXPIRY_MINUTES } from '../config.js';
 import { createGuest, deleteGuest, GuestChanges, listGuests, MASTER_LABEL, updateGuest } from '../guests.js';
 import { requireAuth, requireMaster } from '../session.js';
-import { isPassword, MIN_PASSWORD } from './files.js';
+import { isPassword } from './files.js';
 
 const MAX_GUEST_NAME = 50;
-const MAX_FILES_LIMIT = 1_000_000;
+const MAX_TOTAL_MB = 1_000_000; // 1 TB
 
 const parseId = (raw: string): number | null => (/^\d{1,9}$/.test(raw) ? Number(raw) : null);
 
@@ -31,20 +31,20 @@ router.post('/api/guests', async (req, res) => {
   }
   if (trimmed.toLowerCase() === MASTER_LABEL) return res.status(400).json({ error: 'That name is reserved' });
   if (!isPassword(password)) {
-    return res.status(400).json({ error: `Password must be at least ${MIN_PASSWORD} characters` });
+    return res.status(400).json({ error: 'Password cannot be empty' });
   }
   const maxSizeMb = parseLimit(req.body?.maxSizeMb, HARD_MAX_SIZE_MB);
   const maxExpiryMinutes = parseLimit(req.body?.maxExpiryMinutes, MAX_EXPIRY_MINUTES);
-  const maxFiles = parseLimit(req.body?.maxFiles, MAX_FILES_LIMIT);
+  const maxTotalMb = parseLimit(req.body?.maxTotalMb, MAX_TOTAL_MB);
   if (maxSizeMb === false) return res.status(400).json({ error: `Max size must be 1-${HARD_MAX_SIZE_MB} MB` });
   if (maxExpiryMinutes === false) return res.status(400).json({ error: 'Invalid max expiry' });
-  if (maxFiles === false) return res.status(400).json({ error: `Max files must be 1-${MAX_FILES_LIMIT}` });
+  if (maxTotalMb === false) return res.status(400).json({ error: `Total storage must be 1-${MAX_TOTAL_MB} MB` });
 
   try {
     const id = await createGuest(trimmed, password, {
       maxSizeMb: maxSizeMb ?? null,
       maxExpiryMinutes: maxExpiryMinutes ?? null,
-      maxFiles: maxFiles ?? null,
+      maxTotalMb: maxTotalMb ?? null,
     });
     res.status(201).json({ id });
   } catch (e) {
@@ -61,19 +61,19 @@ router.patch('/api/guests/:id', async (req, res) => {
 
   if (body.password !== undefined) {
     if (!isPassword(body.password)) {
-      return res.status(400).json({ error: `Password must be at least ${MIN_PASSWORD} characters` });
+      return res.status(400).json({ error: 'Password cannot be empty' });
     }
     changes.password = body.password;
   }
   const maxSizeMb = parseLimit(body.maxSizeMb, HARD_MAX_SIZE_MB);
   const maxExpiryMinutes = parseLimit(body.maxExpiryMinutes, MAX_EXPIRY_MINUTES);
-  const maxFiles = parseLimit(body.maxFiles, MAX_FILES_LIMIT);
+  const maxTotalMb = parseLimit(body.maxTotalMb, MAX_TOTAL_MB);
   if (maxSizeMb === false) return res.status(400).json({ error: `Max size must be 1-${HARD_MAX_SIZE_MB} MB` });
   if (maxExpiryMinutes === false) return res.status(400).json({ error: 'Invalid max expiry' });
-  if (maxFiles === false) return res.status(400).json({ error: `Max files must be 1-${MAX_FILES_LIMIT}` });
+  if (maxTotalMb === false) return res.status(400).json({ error: `Total storage must be 1-${MAX_TOTAL_MB} MB` });
   if (maxSizeMb !== undefined) changes.maxSizeMb = maxSizeMb;
   if (maxExpiryMinutes !== undefined) changes.maxExpiryMinutes = maxExpiryMinutes;
-  if (maxFiles !== undefined) changes.maxFiles = maxFiles;
+  if (maxTotalMb !== undefined) changes.maxTotalMb = maxTotalMb;
   if (!Object.keys(changes).length) return res.status(400).json({ error: 'Nothing to change' });
 
   if (id === null || !(await updateGuest(id, changes))) return res.status(404).json({ error: 'Not found' });

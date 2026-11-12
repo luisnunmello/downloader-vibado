@@ -4,7 +4,7 @@ A small password-protected file sharing site built with Express, TypeScript and 
 
 - **Sign in once** at `/login` with the master password, or with a guest name and password.
 - The **master** gets an admin page to manage every file and the guest uploaders.
-- **Guests** get their own page to manage the files they uploaded. The master can set a maximum file size, a maximum lifetime and a maximum number of files per guest.
+- **Guests** get their own page to manage the files they uploaded. The master can set a maximum file size, a maximum lifetime and a total storage quota per guest.
 - **Each upload gets its own download password** (or none, if you choose) and an unguessable link.
 - Uploads can **expire** and be deleted automatically.
 - Files, passwords, sessions and the download history are stored in Postgres.
@@ -13,7 +13,7 @@ A small password-protected file sharing site built with Express, TypeScript and 
 
 **Signing in** (`/login`): leave the name empty and enter the master password, or enter a guest name and that guest's password. You are sent to `/admin` (master) or `/guest` (guest) and stay signed in for 12 hours or until you sign out.
 
-**Uploading** (`/upload`): reached from the "Upload a file" button on the admin and guest pages. Pick a file, choose a password for this download (or tick "No password"), and choose when it is deleted. You get a link like `https://your-host/d/<48-character random token>`. The page shows your limits and only offers deletion times you are allowed.
+**Uploading** (`/upload`): reached from the "Upload a file" button on the admin and guest pages. Pick a file, choose a password for this download (or tick "No password"; guests can do this too), and choose when it is deleted. You get a link like `https://your-host/d/<48-character random token>`. The page shows your limits and only offers deletion times you are allowed.
 
 
 **Downloading** (`/d/<token>`): anyone with the link and that file's download password can download it under its original name. No sign-in is needed. A file uploaded with "No password" can be downloaded by anyone with the link; its page still shows a Download button, so link previews and crawlers do not trigger or log a download.
@@ -33,7 +33,7 @@ A small password-protected file sharing site built with Express, TypeScript and 
 - The master has no file size limit from the app. The only cap is 1000 MB, because a file is stored in a single Postgres `bytea` value (1 GB maximum). Large uploads use a lot of memory: expect about twice the file size in RAM during the transfer.
 - Each guest can have a **max file size** (1-1000 MB). Without one, the server default `MAX_SIZE_MB` applies.
 - Each guest can have a **max expiry**, picked from common choices (10 minutes to 30 days) or a custom amount in minutes, hours or days. When set, the guest's files must expire within that time and "never" is not offered.
-- Each guest can have a **max number of files**: how many of their files may be stored at once. Expired files do not count, and deleting a file frees a slot. The upload page shows "You have used X of Y files". The check is repeated atomically when the file is stored, so simultaneous uploads cannot exceed it. This limits the file count, not the total storage; combine it with the max file size to bound a guest's space.
+- Each guest can have a **total storage quota** in MB: the combined size of all their files that have not expired. Deleting or expiring a file frees space. An upload that does not fit in what is left is refused, and the check is repeated atomically when the file is stored, so simultaneous uploads cannot exceed the quota. The upload page shows "Storage used: X of Y", and the admin page shows each guest's usage.
 - Limits are enforced on the server. The upload page reads them from `/api/limits` to hide options that would be refused.
 - Changing a limit affects future uploads only. Existing files are left as they are.
 
@@ -43,7 +43,7 @@ Details:
 
 - The home page (`/`) only links to the sign-in page. It lists no files. Unknown or expired download links return 404.
 - Sessions are random 256-bit tokens in an `HttpOnly`, `SameSite=Strict` cookie (also `Secure` over HTTPS). Only a hash of the token is stored in Postgres.
-- Passwords are at least 4 characters and are stored as salted PBKDF2-SHA256 hashes (100,000 iterations, built into Node, no extra memory).
+- Passwords can be any length (they only must not be empty; for an open download choose "No password") and are stored as salted PBKDF2-SHA256 hashes (100,000 iterations, built into Node, no extra memory).
 - Expired files and sessions are cleaned up every minute (and once at startup). Expired files are refused immediately, even before cleanup.
 - Failed attempts (sign-in and download passwords) are rate limited to 10 per IP per 15 minutes. The counter is in memory and resets on restart.
 - Other people's file tokens are never confirmed: managing a file you do not own returns 404.
@@ -104,6 +104,7 @@ On startup the app migrates the database in place:
 - Existing files are marked as uploaded by `master`. Files uploaded by a guest are linked to that guest by name.
 - Uploading moved from the admin and guest pages to its own page, `/upload`.
 - Files uploaded before per-file download passwords existed stay unavailable (they are not made public). Open the file in the admin page and use "Set password" to make it downloadable again, or "Remove password" to share it freely.
+- The short-lived per-guest "max number of files" setting is replaced by the storage quota; its column is dropped.
 - Passwords hashed with the old scrypt scheme no longer verify. Run `npm run set-password` and re-upload the affected files.
 
 ## Database schema
@@ -112,7 +113,7 @@ On startup the app migrates the database in place:
 credentials (role TEXT PRIMARY KEY, salt BYTEA, hash BYTEA)          -- only the 'master' role
 guests      (id SERIAL PRIMARY KEY, name TEXT, salt BYTEA, hash BYTEA, created_at TIMESTAMPTZ,
              max_size_mb INT NULL, max_expiry_minutes INT NULL,        -- NULL = default size / no expiry limit
-             max_files INT NULL)                                       -- NULL = no limit
+             max_total_mb INT NULL)                                    -- NULL = no limit
 files       (token TEXT PRIMARY KEY, name TEXT, size BIGINT, data BYTEA, uploader TEXT,
              guest_id INT REFERENCES guests ON DELETE SET NULL,
              pw_salt BYTEA, pw_hash BYTEA, no_password BOOLEAN, expires_at TIMESTAMPTZ NULL, created_at TIMESTAMPTZ)

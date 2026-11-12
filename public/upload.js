@@ -22,8 +22,8 @@ function showLimits() {
   if (limits.maxExpiryMinutes !== null) {
     $('limits').textContent += ` Files are deleted after at most ${fmtMinutes(limits.maxExpiryMinutes)}.`;
   }
-  if (limits.maxFiles !== null) {
-    $('limits').textContent += ` You have used ${limits.filesUsed} of ${limits.maxFiles} files.`;
+  if (limits.maxTotalBytes !== null) {
+    $('limits').textContent += ` Storage used: ${fmtSize(limits.usedBytes)} of ${fmtSize(limits.maxTotalBytes)}.`;
   }
 }
 
@@ -54,6 +54,9 @@ $('uploadForm').addEventListener('submit', async (e) => {
   e.preventDefault();
   const file = $('file').files[0];
   if (!limits) return showError('Still loading your limits, try again in a moment.');
+  if (limits.maxTotalBytes !== null && file.size > limits.maxTotalBytes - limits.usedBytes) {
+    return showError(`Not enough storage left (${fmtSize(Math.max(0, limits.maxTotalBytes - limits.usedBytes))} free)`);
+  }
   if (file.size > limits.maxSizeBytes) {
     return showError(`File too large (maximum ${Math.floor(limits.maxSizeBytes / 1024 / 1024)} MB)`);
   }

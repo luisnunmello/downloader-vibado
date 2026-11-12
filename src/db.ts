@@ -62,7 +62,10 @@ export async function migrate(): Promise<void> {
     ALTER TABLE guests ADD COLUMN IF NOT EXISTS max_size_mb INTEGER;
     ALTER TABLE guests ADD COLUMN IF NOT EXISTS max_expiry_minutes INTEGER;
 
-    ALTER TABLE guests ADD COLUMN IF NOT EXISTS max_files INTEGER; -- NULL = no limit
+    -- Total storage a guest may use across all their files, in MB. NULL = no limit.
+    ALTER TABLE guests ADD COLUMN IF NOT EXISTS max_total_mb INTEGER;
+    -- Replaced by the storage quota above.
+    ALTER TABLE guests DROP COLUMN IF EXISTS max_files;
 
     -- Explicit flag for downloads without a password. Rows with no hash and no flag (files from before
     -- per-file passwords) stay unavailable instead of becoming public.

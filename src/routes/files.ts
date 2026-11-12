@@ -16,9 +16,8 @@ import { limitsFor } from '../limits.js';
 import { hashPassword } from '../password.js';
 import { currentIdentity, requireAuth } from '../session.js';
 
-export const MIN_PASSWORD = 4;
-
-export const isPassword = (v: unknown): v is string => typeof v === 'string' && v.length >= MIN_PASSWORD;
+// No minimum length, but an empty password is not a password: use "no password" for open downloads.
+export const isPassword = (v: unknown): v is string => typeof v === 'string' && v.length > 0;
 const isValidMinutes = (v: unknown): v is number =>
   typeof v === 'number' && Number.isInteger(v) && v >= 0 && v <= MAX_EXPIRY_MINUTES;
 
@@ -65,13 +64,7 @@ router.put('/api/files', async (req, res) => {
     const noPassword = req.get('x-no-password') === '1';
     const downloadPassword = headerValue(req, 'x-download-password');
     if (!noPassword && !isPassword(downloadPassword)) {
-      return res.status(400).json({ error: `Download password must be at least ${MIN_PASSWORD} characters` });
-    }
-    const fileLimitReached = {
-      error: `File limit reached (${limits.maxFiles} files). Delete a file before uploading another.`,
-    };
-    if (limits.maxFiles !== null && (limits.filesUsed ?? 0) >= limits.maxFiles) {
-      return res.status(409).json(fileLimitReached);
+      return res.status(400).json({ error: 'Enter a download password, or choose "No password"' });
     }
     const minutes = Number(req.get('x-expires-minutes') || 0);
     if (!isValidMinutes(minutes)) return res.status(400).json({ error: 'Invalid expiry' });
@@ -79,10 +72,17 @@ router.put('/api/files', async (req, res) => {
       return res.status(400).json({ error: `Files must be deleted within ${limits.maxExpiryMinutes} minutes` });
     }
 
-    const tooLarge = { error: `File too large (maximum ${mb(limits.maxSizeBytes)} MB)` };
-    if (Number(req.get('content-length') || 0) > limits.maxSizeBytes) return res.status(413).json(tooLarge);
-    const data = await readBody(req, limits.maxSizeBytes);
-    if (!data) return res.status(413).json(tooLarge);
+    // The largest this upload may be: the per-file limit, or what is left of the guest's storage quota.
+    const free =
+      limits.maxTotalBytes === null ? Infinity : Math.max(0, limits.maxTotalBytes - (limits.usedBytes ?? 0));
+    const maxBytes = Math.min(limits.maxSizeBytes, free);
+    const tooLarge = () =>
+      free < limits.maxSizeBytes
+        ? { error: `Not enough storage left (${mb(free)} MB free of ${mb(limits.maxTotalBytes ?? 0)} MB)` }
+        : { error: `File too large (maximum ${mb(limits.maxSizeBytes)} MB)` };
+    if (Number(req.get('content-length') || 0) > maxBytes) return res.status(413).json(tooLarge());
+    const data = await readBody(req, maxBytes);
+    if (!data) return res.status(413).json(tooLarge());
 
     const stored = await insertFile(
       {
@@ -93,10 +93,10 @@ router.put('/api/files', async (req, res) => {
         uploader: identity.role === 'master' ? MASTER_LABEL : identity.name,
         guestId: identity.role === 'guest' ? identity.guestId : null,
       },
-      limits.maxFiles,
+      limits.maxTotalBytes,
     );
-    // Checked again inside the insert, in case other uploads finished while this one was in flight.
-    if (!stored) return res.status(409).json(fileLimitReached);
+    // The quota is checked again inside the insert, in case other uploads finished while this one was in flight.
+    if (!stored) return res.status(413).json({ error: 'Not enough storage left. Delete a file or ask for more space.' });
     const { token, expiresAt } = stored;
     res.json({ link: `/d/${token}`, expiresAt });
   } catch (e) {
@@ -126,7 +126,7 @@ router.patch('/api/files/:token', express.json({ limit: '4kb' }), async (req, re
     } else if (isPassword(body.downloadPassword)) {
       changes.password = await hashPassword(body.downloadPassword);
     } else {
-      return res.status(400).json({ error: `Download password must be at least ${MIN_PASSWORD} characters` });
+      return res.status(400).json({ error: 'Download password cannot be empty' });
     }
   }
   if (body.expiresInMinutes !== undefined) {
