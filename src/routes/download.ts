@@ -2,6 +2,7 @@ import express, { Response, Router } from 'express';
 import { pipeline } from 'stream/promises';
 import { FileInfo, findFileInfo, recordDownload } from '../files.js';
 import { checkPreviewKey, createPreviewKey, previewOf } from '../preview.js';
+import { PUBLIC_URL } from '../config.js';
 import { fileSize, readFile, readHead, storedPath } from '../storage.js';
 import { videoSize } from '../trim.js';
 import { verifyPassword } from '../password.js';
@@ -82,7 +83,7 @@ router.post('/d/:token', express.urlencoded({ extended: false, limit: '4kb' }), 
 // which anyone with the link can see anyway. Protected files get no embed, not even their name.
 async function embedTags(req: express.Request<{ token: string }>, info: FileInfo): Promise<string> {
   const token = req.params.token;
-  const base = `${req.protocol}://${req.get('host')}/d/${token}`;
+  const base = `${PUBLIC_URL || `${req.protocol}://${req.get('host')}`}/d/${token}`;
   // The file name in the URL helps apps that guess the type from the extension.
   const rawUrl = `${base}/raw/${encodeURIComponent(info.name)}`;
   const preview = previewOf(info.name);

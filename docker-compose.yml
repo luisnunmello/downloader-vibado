@@ -9,6 +9,7 @@ services:
       MAX_SIZE_MB: ${MAX_SIZE_MB:-100}
       DATA_DIR: /data
       TRUST_PROXY: ${TRUST_PROXY:-}
+      PUBLIC_URL: ${PUBLIC_URL:-}
     volumes:
       - files:/data
     depends_on:
