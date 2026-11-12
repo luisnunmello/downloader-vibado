@@ -1,4 +1,5 @@
 import crypto from 'crypto';
+import { Identity } from './auth.js';
 import { pool } from './db.js';
 
 export interface FileInfo {
@@ -15,7 +16,8 @@ export interface NewFile {
   salt: Buffer;
   hash: Buffer;
   expiresInMinutes: number; // 0 = never
-  uploader: string;
+  uploader: string; // display label
+  guestId: number | null; // owner, when uploaded by a guest
 }
 
 export interface FileSummary {
@@ -47,10 +49,10 @@ const LIVE = '(expires_at IS NULL OR expires_at > now())';
 export async function insertFile(file: NewFile): Promise<{ token: string; expiresAt: Date | null }> {
   const token = crypto.randomBytes(24).toString('base64url');
   const { rows } = await pool.query<{ expires_at: Date | null }>(
-    `INSERT INTO files (token, name, size, data, pw_salt, pw_hash, uploader, expires_at)
-     VALUES ($1, $2, $3, $4, $5, $6, $8, CASE WHEN $7::int > 0 THEN now() + $7::int * interval '1 minute' END)
+    `INSERT INTO files (token, name, size, data, pw_salt, pw_hash, uploader, guest_id, expires_at)
+     VALUES ($1, $2, $3, $4, $5, $6, $8, $9, CASE WHEN $7::int > 0 THEN now() + $7::int * interval '1 minute' END)
      RETURNING expires_at`,
-    [token, file.name, file.data.length, file.data, file.salt, file.hash, file.expiresInMinutes, file.uploader],
+    [token, file.name, file.data.length, file.data, file.salt, file.hash, file.expiresInMinutes, file.uploader, file.guestId],
   );
   return { token, expiresAt: rows[0].expires_at };
 }
@@ -87,10 +89,19 @@ export async function recordDownload(token: string, ip: string): Promise<void> {
   await pool.query('INSERT INTO downloads (token, ip) VALUES ($1, $2)', [token, ip]);
 }
 
-// ---------- Admin ----------
+// ---------- Management (master sees everything, a guest only their own files) ----------
 
-/** All files, newest first, including ones that have expired but not yet been cleaned up. */
-export async function listFiles(): Promise<FileSummary[]> {
+/** Whether the identity may view, edit or delete this file. */
+export async function canManage(identity: Identity, token: string): Promise<boolean> {
+  const { rowCount } =
+    identity.role === 'master'
+      ? await pool.query('SELECT 1 FROM files WHERE token = $1', [token])
+      : await pool.query('SELECT 1 FROM files WHERE token = $1 AND guest_id = $2', [token, identity.guestId]);
+  return !!rowCount;
+}
+
+/** Files newest first, including ones that have expired but not yet been cleaned up. */
+export async function listFiles(identity: Identity): Promise<FileSummary[]> {
   const { rows } = await pool.query<{
     token: string;
     name: string;
@@ -102,7 +113,10 @@ export async function listFiles(): Promise<FileSummary[]> {
   }>(
     `SELECT f.token, f.name, f.size, f.uploader, f.created_at, f.expires_at,
             (SELECT count(*) FROM downloads d WHERE d.token = f.token) AS downloads
-     FROM files f ORDER BY f.created_at DESC`,
+     FROM files f
+     WHERE $1::int IS NULL OR f.guest_id = $1
+     ORDER BY f.created_at DESC`,
+    [identity.role === 'guest' ? identity.guestId : null],
   );
   return rows.map((r) => ({
     token: r.token,

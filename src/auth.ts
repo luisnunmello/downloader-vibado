@@ -1,6 +1,9 @@
 import { pool } from './db.js';
-import { findGuestCredentials, MASTER_LABEL } from './guests.js';
+import { findGuestCredentials } from './guests.js';
 import { hashPassword, verifyPassword } from './password.js';
+
+/** Who is signed in: the master, or a guest uploader. */
+export type Identity = { role: 'master' } | { role: 'guest'; guestId: number; name: string };
 
 export async function setMasterPassword(password: string): Promise<void> {
   const { salt, hash } = await hashPassword(password);
@@ -11,7 +14,7 @@ export async function setMasterPassword(password: string): Promise<void> {
   );
 }
 
-export async function checkMasterPassword(password: unknown): Promise<boolean> {
+async function checkMasterPassword(password: string): Promise<boolean> {
   const { rows } = await pool.query<{ salt: Buffer; hash: Buffer }>(
     "SELECT salt, hash FROM credentials WHERE role = 'master'",
   );
@@ -19,15 +22,12 @@ export async function checkMasterPassword(password: unknown): Promise<boolean> {
   return verifyPassword(password, rows[0].salt, rows[0].hash);
 }
 
-/**
- * Checks upload credentials. An empty guest name means the master password.
- * Returns the uploader label to store on the file, or null if the credentials are wrong.
- */
-export async function authenticateUploader(guestName: string, password: string): Promise<string | null> {
-  if (!guestName) return (await checkMasterPassword(password)) ? MASTER_LABEL : null;
+/** Checks sign-in credentials. An empty guest name means the master password. */
+export async function authenticate(guestName: string, password: string): Promise<Identity | null> {
+  if (!guestName) return (await checkMasterPassword(password)) ? { role: 'master' } : null;
   const guest = await findGuestCredentials(guestName);
-  if (!guest) return null;
-  return (await verifyPassword(password, guest.salt, guest.hash)) ? guest.name : null;
+  if (!guest || !(await verifyPassword(password, guest.salt, guest.hash))) return null;
+  return { role: 'guest', guestId: guest.id, name: guest.name };
 }
 
 /** Seeds the master password from an env var, only if none is stored yet. */

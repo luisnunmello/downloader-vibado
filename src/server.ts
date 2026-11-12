@@ -3,11 +3,13 @@ import { seedMasterPassword } from './auth.js';
 import { CLEANUP_INTERVAL_MS, MASTER_PASSWORD, PORT } from './config.js';
 import { migrate } from './db.js';
 import { deleteExpiredFiles } from './files.js';
+import { deleteExpiredSessions } from './session.js';
 
 async function cleanup(): Promise<void> {
   try {
     const n = await deleteExpiredFiles();
     if (n) console.log(`Deleted ${n} expired file(s).`);
+    await deleteExpiredSessions();
   } catch (e) {
     console.error('Cleanup failed:', e);
   }

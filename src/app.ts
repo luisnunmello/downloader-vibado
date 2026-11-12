@@ -1,13 +1,16 @@
 import express from 'express';
-import { PUBLIC_DIR } from './config.js';
-import adminRoutes from './routes/admin.js';
+import { PUBLIC_DIR, TRUST_PROXY } from './config.js';
+import authRoutes from './routes/auth.js';
 import downloadRoutes from './routes/download.js';
-import uploadRoutes from './routes/upload.js';
-import { messagePage } from './views.js';
+import fileRoutes from './routes/files.js';
+import guestRoutes from './routes/guests.js';
+import panelRoutes from './routes/panel.js';
+import { messagePage, render } from './views.js';
 
 export function createApp() {
   const app = express();
   app.disable('x-powered-by');
+  if (TRUST_PROXY !== undefined) app.set('trust proxy', TRUST_PROXY);
 
   app.use((_req, res, next) => {
     res.set({
@@ -21,8 +24,11 @@ export function createApp() {
   });
 
   app.use('/static', express.static(PUBLIC_DIR));
-  app.use(uploadRoutes);
-  app.use(adminRoutes);
+  app.get('/', (_req, res) => res.send(render('home', 'File sharing')));
+  app.use(authRoutes);
+  app.use(panelRoutes);
+  app.use(fileRoutes);
+  app.use(guestRoutes);
   app.use(downloadRoutes);
   app.use((_req, res) => res.status(404).send(messagePage('Not found')));
 

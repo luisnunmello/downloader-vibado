@@ -2,34 +2,41 @@
 
 A small password-protected file sharing site built with Express, TypeScript and Postgres.
 
-- A **master password** gives full control through an admin page.
-- The master can create **guest uploaders**, each with their own name and password.
+- **Sign in once** at `/login` with the master password, or with a guest name and password.
+- The **master** gets an admin page to manage every file and the guest uploaders.
+- **Guests** get their own page to upload files and manage the files they uploaded.
 - **Each upload gets its own download password** and an unguessable link.
 - Uploads can **expire** and be deleted automatically.
-- Files, passwords and the download history are stored in Postgres.
+- Files, passwords, sessions and the download history are stored in Postgres.
 
 ## How it works
 
-**Uploading** (`/upload`): enter the master password, or a guest name and password. Pick a file, choose a password for this download, and optionally a deletion time (10 minutes, 1 hour, 1 day, 7 days, 30 days, or never). You get a link like `https://your-host/d/<48-character random token>`.
+**Signing in** (`/login`): leave the name empty and enter the master password, or enter a guest name and that guest's password. You are sent to `/admin` (master) or `/guest` (guest) and stay signed in for 12 hours or until you sign out.
 
-**Downloading** (`/d/<token>`): anyone with the link and that file's download password can download it under its original name.
+**Uploading:** the upload form is at the top of both the admin and guest pages. Pick a file, choose a password for this download, and optionally a deletion time (10 minutes, 1 hour, 1 day, 7 days, 30 days, or never). You get a link like `https://your-host/d/<48-character random token>`.
 
-**Admin** (`/admin`): sign in with the master password to:
+**Downloading** (`/d/<token>`): anyone with the link and that file's download password can download it under its original name. No sign-in is needed.
 
-- see every file: name, size, who uploaded it, when, when it expires, and how many times it was downloaded
-- see the download history of a file (time and IP address)
-- rename a file, change its download password, change or remove its expiry, or delete it
-- create guest uploaders, reset their passwords and delete them
+**What each role can do**
 
-Guests can only upload. They cannot list, change or delete anything, including their own files. Deleting a guest keeps the files they uploaded.
+| | Master (`/admin`) | Guest (`/guest`) |
+|---|---|---|
+| Upload files | yes | yes |
+| See files | all files | only their own |
+| See a file's download history (time, IP) | yes | own files |
+| Rename, change download password, change expiry, delete | any file | own files |
+| Create guests, reset their passwords, delete them | yes | no |
+
+Deleting a guest keeps the files they uploaded (they then belong to nobody, so only the master can manage them) and signs that guest out.
 
 Details:
 
-- The site root and unknown or expired links return 404, so nothing is listed publicly. `/admin` and `/upload` are not linked from anywhere, but they are not secret either: they are protected by the passwords.
+- The home page (`/`) only links to the sign-in page. It lists no files. Unknown or expired download links return 404.
+- Sessions are random 256-bit tokens in an `HttpOnly`, `SameSite=Strict` cookie (also `Secure` over HTTPS). Only a hash of the token is stored in Postgres.
 - Passwords are at least 4 characters and are stored as salted PBKDF2-SHA256 hashes (100,000 iterations, built into Node, no extra memory).
-- Expired files are refused immediately, and a cleanup job deletes them from the database every minute (and once at startup).
-- Password attempts (master, guest and download) are rate limited to 10 failures per IP per 15 minutes. The counter is in memory and resets on restart.
-- The admin page keeps the master password in memory only and sends it with each request. Reloading the page signs you out. There are no cookies or sessions.
+- Expired files and sessions are cleaned up every minute (and once at startup). Expired files are refused immediately, even before cleanup.
+- Failed attempts (sign-in and download passwords) are rate limited to 10 per IP per 15 minutes. The counter is in memory and resets on restart.
+- Other people's file tokens are never confirmed: managing a file you do not own returns 404.
 - Guest names are unique (case-insensitive), at most 50 characters, and `master` is reserved.
 - Uploads are sent as the raw request body, so no multipart library is needed.
 
@@ -41,7 +48,7 @@ cp .env.example .env        # on Windows: copy .env.example .env
 docker compose up -d --build
 ```
 
-Open `http://localhost:3000/admin` or `http://localhost:3000/upload`.
+Open `http://localhost:3000` and sign in with the master password.
 
 The compose file runs the app (`node:22-alpine`) and Postgres (`postgres:17-alpine`). Postgres is not published to the host, and its data lives in the `pgdata` volume.
 
@@ -66,6 +73,7 @@ On PowerShell, set variables with `$env:NAME="value"` instead of `export`.
 | `MASTER_PASSWORD` | none | Seeds the master password on first start |
 | `PORT` | `3000` | HTTP port |
 | `MAX_SIZE_MB` | `100` | Maximum upload size in MB |
+| `TRUST_PROXY` | unset | Set to `1` (or an Express trust-proxy value) when behind a reverse proxy |
 | `DB_PASSWORD` | `downloader` | Postgres password (Docker Compose only) |
 
 `MASTER_PASSWORD` only seeds the database when no master password is stored yet. After the first start it is ignored. The old name `UPLOAD_PASSWORD` is still accepted as a fallback.
@@ -83,7 +91,8 @@ This needs the dev dependencies and a reachable `DATABASE_URL`. The Docker image
 On startup the app migrates the database in place:
 
 - The stored upload password becomes the master password.
-- Existing files are marked as uploaded by `master`.
+- Existing files are marked as uploaded by `master`. Files uploaded by a guest are linked to that guest by name.
+- The `/upload` page is gone; `/upload` redirects to the sign-in page.
 - Files uploaded before per-file download passwords existed cannot be downloaded. Re-upload them.
 - Passwords hashed with the old scrypt scheme no longer verify. Run `npm run set-password` and re-upload the affected files.
 
@@ -93,16 +102,19 @@ On startup the app migrates the database in place:
 credentials (role TEXT PRIMARY KEY, salt BYTEA, hash BYTEA)          -- only the 'master' role
 guests      (id SERIAL PRIMARY KEY, name TEXT, salt BYTEA, hash BYTEA, created_at TIMESTAMPTZ)
 files       (token TEXT PRIMARY KEY, name TEXT, size BIGINT, data BYTEA, uploader TEXT,
+             guest_id INT REFERENCES guests ON DELETE SET NULL,
              pw_salt BYTEA, pw_hash BYTEA, expires_at TIMESTAMPTZ NULL, created_at TIMESTAMPTZ)
 downloads   (id BIGSERIAL PRIMARY KEY, token TEXT REFERENCES files ON DELETE CASCADE,
              downloaded_at TIMESTAMPTZ, ip TEXT)
+sessions    (token_hash TEXT PRIMARY KEY, role TEXT, guest_id INT REFERENCES guests ON DELETE CASCADE,
+             expires_at TIMESTAMPTZ)
 ```
 
 ## Limitations
 
 - **Memory use:** each file is held fully in memory during upload and download, and stored as one `bytea` value. A transfer can use about twice the file size in RAM. Keep `MAX_SIZE_MB` modest on small servers. For much larger files, switch to Postgres large objects, which can stream.
 - **No HTTPS:** the app serves plain HTTP. Put it behind a reverse proxy that terminates TLS, or the passwords travel unencrypted. This matters most for the master password.
-- **Behind a proxy:** rate limiting and the download log use the client IP. Behind a proxy, you will need `app.set('trust proxy', ...)`, otherwise every visitor appears as the proxy's address and they share one rate-limit budget.
+- **Behind a proxy:** set `TRUST_PROXY=1`. Without it, every visitor appears as the proxy's address (they share one rate-limit budget and the download log shows the proxy IP), and the session cookie is not marked `Secure`.
 - **Download log keeps IP addresses.** Deleting a file deletes its log. Keep this in mind for privacy rules that apply to you.
 - **Expiry is by time only:** there is no "delete after first download" option.
 - **Disk space:** Postgres may not return the space of deleted files to the operating system right away.
@@ -110,22 +122,25 @@ downloads   (id BIGSERIAL PRIMARY KEY, token TEXT REFERENCES files ON DELETE CAS
 ## Project layout
 
 ```
-src/server.ts          Startup: migrations, password seeding, expiry cleanup job, listen
-src/app.ts             Express app: security headers, static files, routes
+src/server.ts          Startup: migrations, password seeding, cleanup job, listen
+src/app.ts             Express app: security headers, static files, home page, routes
 src/config.ts          Environment variables and paths
 src/db.ts              Postgres pool and migrations
 src/password.ts        PBKDF2 hashing and verification
-src/auth.ts            Master password and upload authentication (master or guest)
+src/auth.ts            Master password and sign-in (master or guest)
+src/session.ts         Sessions in Postgres, cookie reading, requireAuth / requireMaster
 src/guests.ts          Guest uploader queries
 src/files.ts           File queries: store, serve, expire, list, edit, download log
 src/http.ts            Header and filename helpers
 src/rateLimit.ts       In-memory failed-attempt limiter
 src/views.ts           Tiny HTML template renderer
-src/routes/upload.ts   GET /upload and PUT /api/upload
+src/routes/auth.ts     /login, /api/login, /api/logout
+src/routes/panel.ts    /admin and /guest pages
+src/routes/files.ts    /api/files: upload, list, edit, delete, download history
+src/routes/guests.ts   /api/guests (master only)
 src/routes/download.ts GET and POST /d/:token
-src/routes/admin.ts    GET /admin and the /api/admin JSON API
 src/set-password.ts    CLI for changing the master password
-views/                 HTML templates (layout, upload, download, admin, message)
+views/                 HTML templates (layout, home, login, panel, download, message)
 public/                CSS and page scripts, served at /static
 Dockerfile             Multi-stage Alpine build
 docker-compose.yml     App and Postgres

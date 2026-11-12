@@ -38,9 +38,11 @@ export async function deleteGuest(id: number): Promise<boolean> {
   return !!rowCount;
 }
 
-export async function findGuestCredentials(name: string): Promise<{ name: string; salt: Buffer; hash: Buffer } | null> {
-  const { rows } = await pool.query<{ name: string; salt: Buffer; hash: Buffer }>(
-    'SELECT name, salt, hash FROM guests WHERE lower(name) = lower($1)',
+export async function findGuestCredentials(
+  name: string,
+): Promise<{ id: number; name: string; salt: Buffer; hash: Buffer } | null> {
+  const { rows } = await pool.query<{ id: number; name: string; salt: Buffer; hash: Buffer }>(
+    'SELECT id, name, salt, hash FROM guests WHERE lower(name) = lower($1)',
     [name],
   );
   return rows[0] ?? null;

@@ -45,5 +45,24 @@ export async function migrate(): Promise<void> {
       ip TEXT
     );
     CREATE INDEX IF NOT EXISTS downloads_token_idx ON downloads (token);
+
+    -- Ownership by guest id (the uploader name stays for display). Deleting a guest keeps their files.
+    -- The backfill runs once, when the column is first added.
+    DO $$ BEGIN
+      IF NOT EXISTS (
+        SELECT 1 FROM information_schema.columns WHERE table_name = 'files' AND column_name = 'guest_id'
+      ) THEN
+        ALTER TABLE files ADD COLUMN guest_id INTEGER REFERENCES guests(id) ON DELETE SET NULL;
+        UPDATE files SET guest_id = g.id FROM guests g
+          WHERE files.uploader <> 'master' AND lower(files.uploader) = lower(g.name);
+      END IF;
+    END $$;
+
+    CREATE TABLE IF NOT EXISTS sessions (
+      token_hash TEXT PRIMARY KEY,
+      role TEXT NOT NULL CHECK (role IN ('master', 'guest')),
+      guest_id INTEGER REFERENCES guests(id) ON DELETE CASCADE,
+      expires_at TIMESTAMPTZ NOT NULL
+    );
   `);
 }
