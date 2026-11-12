@@ -50,6 +50,33 @@ function showError(message) {
   $('msg').textContent = message;
 }
 
+// Sends the file as the raw request body and shows progress while it goes up.
+function sendFile(file, headers) {
+  return new Promise((resolve, reject) => {
+    const xhr = new XMLHttpRequest();
+    xhr.open('PUT', '/api/files');
+    for (const [name, value] of Object.entries(headers)) xhr.setRequestHeader(name, value);
+    xhr.upload.onprogress = (e) => {
+      if (!e.lengthComputable) return;
+      const percent = Math.floor((e.loaded / e.total) * 100);
+      $('bar').value = percent;
+      $('msg').textContent =
+        e.loaded === e.total
+          ? 'Finishing...'
+          : `Uploading... ${percent}% (${fmtSize(e.loaded)} of ${fmtSize(e.total)})`;
+    };
+    xhr.onload = () => {
+      let json = {};
+      try {
+        json = JSON.parse(xhr.responseText);
+      } catch {}
+      resolve({ status: xhr.status, json });
+    };
+    xhr.onerror = () => reject(new Error('Upload failed (connection lost)'));
+    xhr.send(file);
+  });
+}
+
 $('uploadForm').addEventListener('submit', async (e) => {
   e.preventDefault();
   const file = $('file').files[0];
@@ -62,22 +89,21 @@ $('uploadForm').addEventListener('submit', async (e) => {
   }
 
   $('msg').className = '';
-  $('msg').textContent = 'Uploading...';
+  $('msg').textContent = 'Uploading... 0%';
+  $('go').disabled = true;
+  $('bar').value = 0;
+  $('bar').hidden = false;
   try {
+    // XMLHttpRequest, because fetch cannot report upload progress.
     // Filename and password are URI-encoded so non-ASCII characters survive in headers.
-    const res = await fetch('/api/files', {
-      method: 'PUT',
-      headers: {
-        'x-download-password': encodeURIComponent($('dpw').value),
-        'x-no-password': $('nopw').checked ? '1' : '0',
-        'x-expires-minutes': $('exp').value,
-        'x-filename': encodeURIComponent(file.name),
-      },
-      body: file,
+    const { status, json } = await sendFile(file, {
+      'x-download-password': encodeURIComponent($('dpw').value),
+      'x-no-password': $('nopw').checked ? '1' : '0',
+      'x-expires-minutes': $('exp').value,
+      'x-filename': encodeURIComponent(file.name),
     });
-    if (res.status === 401) return (location.href = '/login');
-    const json = await res.json().catch(() => ({}));
-    if (!res.ok) throw new Error(json.error || 'Upload failed');
+    if (status === 401) return (location.href = '/login');
+    if (status < 200 || status >= 300) throw new Error(json.error || 'Upload failed');
     showResult(json.link, json.expiresAt);
     $('uploadForm').reset();
     syncPasswordField();
@@ -86,6 +112,9 @@ $('uploadForm').addEventListener('submit', async (e) => {
     showLimits();
   } catch (err) {
     showError(err.message);
+  } finally {
+    $('go').disabled = false;
+    $('bar').hidden = true;
   }
 });
 
