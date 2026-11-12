@@ -3,8 +3,9 @@ import { pipeline } from 'stream/promises';
 import { FileInfo, findFileInfo, recordDownload } from '../files.js';
 import { checkPreviewKey, createPreviewKey, previewOf } from '../preview.js';
 import { PUBLIC_URL } from '../config.js';
-import { fileSize, readFile, readHead, storedPath } from '../storage.js';
-import { videoSize } from '../trim.js';
+import { fileSize, readFile, readHead, storedPath, thumbnailPath } from '../storage.js';
+import { ffmpegAvailable, makeThumbnail, videoSize } from '../trim.js';
+import fs from 'fs';
 import { verifyPassword } from '../password.js';
 import { isBlocked, recordFailure } from '../rateLimit.js';
 import { escapeHtml, messagePage, render } from '../views.js';
@@ -109,6 +110,12 @@ async function embedTags(req: express.Request<{ token: string }>, info: FileInfo
     tags.push(meta('og:image', rawUrl), meta('og:image:secure_url', rawUrl), meta('og:image:type', preview.contentType));
     tags.push('  <meta name="twitter:card" content="summary_large_image">');
   } else if (preview?.kind === 'video') {
+    // A still image too: big videos are not played inline by chat apps, which then show this instead.
+    if (await ffmpegAvailable()) {
+      const thumb = `${base}/thumb/preview.jpg`;
+      tags.push(meta('og:image', thumb), meta('og:image:secure_url', thumb), meta('og:image:type', 'image/jpeg'));
+      tags.push('  <meta name="twitter:card" content="summary_large_image">');
+    }
     const { width, height } = await videoSize(token, storedPath(token));
     tags.push(
       meta('og:video', rawUrl),
@@ -121,6 +128,24 @@ async function embedTags(req: express.Request<{ token: string }>, info: FileInfo
   }
   return tags.join('\n');
 }
+
+// Still image of a video, for link embeds. Only for files without a password; made once, then kept on disk.
+router.get('/d/:token/thumb{/:name}', async (req, res) => {
+  try {
+    const info = await findFileInfo(req.params.token);
+    if (!info || info.password || previewOf(info.name)?.kind !== 'video' || !(await ffmpegAvailable())) {
+      return notFound(res);
+    }
+    const thumb = thumbnailPath(req.params.token);
+    if (!fs.existsSync(thumb)) await makeThumbnail(storedPath(req.params.token), thumb);
+    res.set('Content-Type', 'image/jpeg');
+    res.sendFile(thumb, (err) => {
+      if (err && !res.headersSent) notFound(res);
+    });
+  } catch (e) {
+    serverError(res, e);
+  }
+});
 
 // Preview page and the raw content it loads. They need the key from a correct password,
 // except for files without a password, which anyone with the link may already download.

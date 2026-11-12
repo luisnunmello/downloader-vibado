@@ -65,9 +65,17 @@ export async function discardFile(token: string, openStream?: fs.WriteStream): P
   await rm(finalPath(token), { force: true, maxRetries: 3 });
 }
 
+/** Absolute path of a video's cached thumbnail (made on demand for link embeds). */
+export const thumbnailPath = (token: string): string => path.resolve(`${finalPath(token)}.jpg`);
+
+export async function removeThumbnail(token: string): Promise<void> {
+  await rm(thumbnailPath(token), { force: true, maxRetries: 3 }).catch(() => {});
+}
+
 export async function removeFiles(tokens: string[]): Promise<void> {
   for (const token of tokens) {
     await rm(finalPath(token), { force: true, maxRetries: 3 }).catch((e) => console.error('Could not remove file:', e));
+    await removeThumbnail(token);
   }
 }
 

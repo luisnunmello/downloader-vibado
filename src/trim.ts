@@ -39,6 +39,35 @@ export async function videoSize(key: string, file: string): Promise<{ width: num
   return result;
 }
 
+/**
+ * Writes a JPEG still from the video to `out` (for link embeds, when the video is too big to play inline).
+ * Takes the frame at one second, or the first frame for shorter videos.
+ */
+export async function makeThumbnail(file: string, out: string): Promise<void> {
+  const tmp = `${out}.${crypto.randomBytes(4).toString('hex')}.part`;
+  const attempt = (seek: string) =>
+    new Promise<boolean>((resolve) => {
+      const proc = spawn(
+        'ffmpeg',
+        ['-v', 'error', '-y', '-ss', seek, '-i', file, '-frames:v', '1', '-vf', "scale='min(1280,iw)':-2", '-q:v', '4', '-f', 'image2', tmp],
+        { stdio: 'ignore' },
+      );
+      const timer = setTimeout(() => proc.kill('SIGKILL'), 60 * 1000);
+      proc.on('error', () => resolve(false));
+      proc.on('exit', async (code) => {
+        clearTimeout(timer);
+        resolve(code === 0 && (await stat(tmp).then((s) => s.size > 0, () => false)));
+      });
+    });
+  try {
+    if (!(await attempt('1')) && !(await attempt('0'))) throw new TrimError('Could not make a thumbnail');
+    await rename(tmp, out);
+  } catch (e) {
+    await rm(tmp, { force: true });
+    throw e;
+  }
+}
+
 export class TrimError extends Error {}
 
 export interface Cut {

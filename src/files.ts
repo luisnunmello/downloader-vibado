@@ -2,7 +2,7 @@ import crypto from 'crypto';
 import { Identity } from './auth.js';
 import { pool } from './db.js';
 import { previewOf } from './preview.js';
-import { commitFile, discardFile, partialPath, removeFiles, saveStream, storedPath } from './storage.js';
+import { commitFile, discardFile, partialPath, removeFiles, removeThumbnail, saveStream, storedPath } from './storage.js';
 import { Cut, cutVideo } from './trim.js';
 
 /** Salted hash of a download password. */
@@ -182,6 +182,7 @@ export async function cutStoredVideo(token: string, cut: Cut): Promise<boolean> 
     throw e instanceof CutError ? e : new CutError(e instanceof Error ? e.message : 'Could not cut the video');
   }
   await pool.query('UPDATE files SET size = $2 WHERE token = $1', [token, size]);
+  await removeThumbnail(token); // it showed the old video
   return true;
 }
 
