@@ -5,4 +5,5 @@
 <form method="post">
   {{#if needsPassword}}<input name="password" type="password" placeholder="Download password" required autofocus>{{/if}}
   <button>Download</button>
+  {{#if previewable}}<button name="preview" value="1" formtarget="_blank" class="secondary">Preview</button>{{/if}}
 </form>

@@ -19,7 +19,7 @@ export function createApp() {
       'Cache-Control': 'no-store',
       'Referrer-Policy': 'no-referrer',
       // All scripts and styles are served from our own origin; no inline code.
-      'Content-Security-Policy': "default-src 'self'; frame-ancestors 'none'",
+      'Content-Security-Policy': "default-src 'self'; img-src 'self' blob:; media-src 'self' blob:; frame-ancestors 'none'",
     });
     next();
   });

@@ -8,6 +8,7 @@ A small password-protected file sharing site built with Express, TypeScript and 
 - **Each upload gets its own download password** (or none, if you choose) and an unguessable link.
 - Uploads can **expire** and be deleted automatically.
 - Files are stored on disk (`DATA_DIR`); Postgres holds the passwords, sessions, file details and the download history.
+- **Previews:** images, videos and text files can be previewed in the browser before uploading (nothing is sent) and, after entering the password, before downloading. HTML and SVG are never shown inline, so a shared file cannot run scripts. Previews count in the download history.
 
 ## How it works
 

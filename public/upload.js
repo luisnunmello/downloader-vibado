@@ -50,6 +50,39 @@ function showError(message) {
   $('msg').textContent = message;
 }
 
+// Shows the chosen file (image, video or text) before it is uploaded. Nothing is sent anywhere.
+const PREVIEW_TEXT = /\.(txt|md|log|csv|tsv|json|xml|ya?ml|ini|conf|toml|m?js|ts|py|sh|bat|css|java|c|h|cpp|go|rs|rb|php|sql)$/i;
+const PREVIEW_TEXT_LIMIT = 256 * 1024;
+let previewUrl = null;
+
+async function showPreview() {
+  const box = $('preview');
+  if (previewUrl) URL.revokeObjectURL(previewUrl);
+  previewUrl = null;
+  box.replaceChildren();
+  box.hidden = true;
+
+  const file = $('file').files[0];
+  if (!file) return;
+  if (/^image\/(png|jpeg|gif|webp|avif|bmp)$/.test(file.type)) {
+    previewUrl = URL.createObjectURL(file);
+    box.append(h('img', { src: previewUrl, alt: '' }));
+  } else if (/^video\/(mp4|webm|ogg)$/.test(file.type)) {
+    previewUrl = URL.createObjectURL(file);
+    const video = h('video', { src: previewUrl });
+    video.controls = true;
+    box.append(video);
+  } else if (PREVIEW_TEXT.test(file.name)) {
+    const text = await file.slice(0, PREVIEW_TEXT_LIMIT).text();
+    if ($('file').files[0] !== file) return; // another file was picked meanwhile
+    box.append(h('pre', {}, text));
+  } else {
+    return;
+  }
+  box.hidden = false;
+}
+$('file').addEventListener('change', () => showPreview().catch(() => {}));
+
 let currentUpload = null; // the request in flight, so it can be cancelled
 
 // Sends the file as the raw request body and shows progress while it goes up.
