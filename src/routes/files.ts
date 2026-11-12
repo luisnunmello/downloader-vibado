@@ -1,4 +1,4 @@
-import express, { Request, Response, Router } from 'express';
+import express, { Response, Router } from 'express';
 import { MAX_EXPIRY_MINUTES } from '../config.js';
 import {
   canManage,
@@ -20,18 +20,6 @@ import { currentIdentity, requireAuth } from '../session.js';
 export const isPassword = (v: unknown): v is string => typeof v === 'string' && v.length > 0;
 const isValidMinutes = (v: unknown): v is number =>
   typeof v === 'number' && Number.isInteger(v) && v >= 0 && v <= MAX_EXPIRY_MINUTES;
-
-/** Reads the request body, or returns null if it exceeds the size limit. */
-async function readBody(req: Request, limit: number): Promise<Buffer | null> {
-  const chunks: Buffer[] = [];
-  let size = 0;
-  for await (const chunk of req) {
-    size += (chunk as Buffer).length;
-    if (size > limit) return null;
-    chunks.push(chunk as Buffer);
-  }
-  return Buffer.concat(chunks);
-}
 
 /** Sends 404 (not 403, so tokens of other people's files are not confirmed) unless the user may manage the file. */
 async function authorize(res: Response, token: string): Promise<boolean> {
@@ -81,13 +69,12 @@ router.put('/api/files', async (req, res) => {
         ? { error: `Not enough storage left (${mb(free)} MB free of ${mb(limits.maxTotalBytes ?? 0)} MB)` }
         : { error: `File too large (maximum ${mb(limits.maxSizeBytes)} MB)` };
     if (Number(req.get('content-length') || 0) > maxBytes) return res.status(413).json(tooLarge());
-    const data = await readBody(req, maxBytes);
-    if (!data) return res.status(413).json(tooLarge());
 
     const stored = await insertFile(
       {
         name: cleanFilename(headerValue(req, 'x-filename')),
-        data,
+        source: req, // streamed into the database, never held in memory whole
+        maxBytes,
         password: noPassword ? null : await hashPassword(downloadPassword),
         expiresInMinutes: minutes,
         uploader: identity.role === 'master' ? MASTER_LABEL : identity.name,
@@ -95,10 +82,14 @@ router.put('/api/files', async (req, res) => {
       },
       limits.maxTotalBytes,
     );
-    // The quota is checked again inside the insert, in case other uploads finished while this one was in flight.
-    if (!stored) return res.status(413).json({ error: 'Not enough storage left. Delete a file or ask for more space.' });
-    const { token, expiresAt } = stored;
-    res.json({ link: `/d/${token}`, expiresAt });
+    // Both limits are checked again while storing: the real size is only known then, and the quota
+    // can change while the upload is in flight.
+    if (!stored.ok) {
+      return stored.reason === 'quota'
+        ? res.status(413).json({ error: 'Not enough storage left. Delete a file or ask for more space.' })
+        : res.status(413).json(tooLarge());
+    }
+    res.json({ link: `/d/${stored.token}`, expiresAt: stored.expiresAt });
   } catch (e) {
     console.error(e);
     if (!res.headersSent) res.status(500).json({ error: 'Server error' });

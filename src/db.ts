@@ -77,6 +77,16 @@ export async function migrate(): Promise<void> {
       value TEXT NOT NULL
     );
 
+    -- File contents are stored as 1 MB chunks so big files can be streamed. Older files keep their
+    -- contents in files.data (new files leave it NULL).
+    ALTER TABLE files ALTER COLUMN data DROP NOT NULL;
+    CREATE TABLE IF NOT EXISTS file_chunks (
+      token TEXT NOT NULL REFERENCES files(token) ON DELETE CASCADE,
+      idx INTEGER NOT NULL,
+      data BYTEA NOT NULL,
+      PRIMARY KEY (token, idx)
+    );
+
     CREATE TABLE IF NOT EXISTS sessions (
       token_hash TEXT PRIMARY KEY,
       role TEXT NOT NULL CHECK (role IN ('master', 'guest')),

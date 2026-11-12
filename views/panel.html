@@ -11,10 +11,10 @@
 
 {{#if admin}}
 <h2>Server settings</h2>
-<p class="meta">The largest file anyone can upload, the master included. Guests with a lower limit keep it. Files are held in memory while transferring, so keep this reasonable on small servers.</p>
+<p class="meta">The largest file anyone can upload, the master included. Guests with a lower limit keep it. Files are streamed in chunks, so size is limited by free disk space, not memory. Behind a reverse proxy, raise the proxy's own upload limit too.</p>
 <p id="space" class="meta"></p>
 <form id="settingsForm" class="row">
-  <input id="smax" type="number" min="1" max="1000" step="1" placeholder="Maximum file size (MB)" required>
+  <input id="smax" type="number" min="1" step="1" placeholder="Maximum file size (MB)" required>
   <button>Save</button>
 </form>
 
@@ -23,7 +23,7 @@
 <form id="guestForm" class="row">
   <input id="gname" type="text" placeholder="Guest name" maxlength="50" required autocomplete="off">
   <input id="gpw" type="password" placeholder="Guest password" required autocomplete="new-password">
-  <input id="gsize" type="number" min="1" max="1000" step="1" placeholder="Max file size (MB)">
+  <input id="gsize" type="number" min="1" step="1" placeholder="Max file size (MB)">
   <input id="gtotal" type="number" min="1" step="1" placeholder="Total storage (MB)">
   <div class="field">
     <span class="meta">Max expiry</span>

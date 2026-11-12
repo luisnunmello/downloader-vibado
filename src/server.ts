@@ -22,7 +22,11 @@ async function main(): Promise<void> {
   await cleanup();
   setInterval(cleanup, CLEANUP_INTERVAL_MS).unref();
 
-  createApp().listen(PORT, () => console.log(`Listening on http://localhost:${PORT}  (upload page: /upload)`));
+  const server = createApp().listen(PORT, () =>
+    console.log(`Listening on http://localhost:${PORT}  (upload page: /upload)`),
+  );
+  // Big uploads can take a long time; Node's default 5 minute request timeout would cut them off.
+  server.requestTimeout = 0;
 }
 
 main().catch((e) => {

@@ -154,7 +154,6 @@ function guestCard(guest) {
   const sizeInput = h('input', {
     type: 'number',
     min: '1',
-    max: '1000',
     step: '1',
     placeholder: 'Max file size (MB, empty = default)',
     value: guest.maxSizeMb ?? '',

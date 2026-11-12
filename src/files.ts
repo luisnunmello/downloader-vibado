@@ -17,7 +17,8 @@ export interface FileInfo {
 
 export interface NewFile {
   name: string;
-  data: Buffer;
+  source: AsyncIterable<Buffer>; // the file contents, streamed
+  maxBytes: number; // refuse (and store nothing) if the contents are larger
   password: PasswordHash | null; // null = no download password
   expiresInMinutes: number; // 0 = never
   uploader: string; // display label
@@ -46,6 +47,12 @@ export interface FileChanges {
   expiresInMinutes?: number; // counted from now; 0 = never
 }
 
+export type StoreResult =
+  | { ok: true; token: string; expiresAt: Date | null }
+  | { ok: false; reason: 'too-large' | 'quota' };
+
+const CHUNK_SIZE = 1024 * 1024;
+
 export const isToken = (t: string): boolean => /^[A-Za-z0-9_-]{32}$/.test(t);
 
 // Expired files are treated as gone even before the cleanup job removes them.
@@ -61,48 +68,72 @@ export async function storageUsed(guestId: number): Promise<number> {
 }
 
 /**
- * Stores a file. Returns null, storing nothing, if it would take the guest over `maxTotalBytes`.
- * The guest's row is locked so simultaneous uploads cannot slip past the quota.
+ * Stores a file, streaming it into chunk rows inside one transaction, so nothing is kept if it fails.
+ * Stores nothing if it is over `maxBytes`, or would take the guest over `maxTotalBytes`.
+ * The guest's row is locked just before commit so simultaneous uploads cannot slip past the quota.
  */
-export async function insertFile(
-  file: NewFile,
-  maxTotalBytes: number | null,
-): Promise<{ token: string; expiresAt: Date | null } | null> {
+export async function insertFile(file: NewFile, maxTotalBytes: number | null): Promise<StoreResult> {
   const token = crypto.randomBytes(24).toString('base64url');
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
+    await client.query(
+      `INSERT INTO files (token, name, size, pw_salt, pw_hash, no_password, uploader, guest_id)
+       VALUES ($1, $2, 0, $3, $4, $5, $6, $7)`,
+      [
+        token,
+        file.name,
+        file.password?.salt ?? null,
+        file.password?.hash ?? null,
+        file.password === null,
+        file.uploader,
+        file.guestId,
+      ],
+    );
+
+    let total = 0;
+    let index = 0;
+    let pending: Buffer[] = [];
+    let pendingLength = 0;
+    const flush = async () => {
+      if (!pendingLength) return;
+      const data = Buffer.concat(pending, pendingLength);
+      pending = [];
+      pendingLength = 0;
+      await client.query('INSERT INTO file_chunks (token, idx, data) VALUES ($1, $2, $3)', [token, index++, data]);
+    };
+    for await (const chunk of file.source) {
+      total += chunk.length;
+      if (total > file.maxBytes) {
+        await client.query('ROLLBACK');
+        return { ok: false, reason: 'too-large' };
+      }
+      pending.push(chunk);
+      pendingLength += chunk.length;
+      if (pendingLength >= CHUNK_SIZE) await flush();
+    }
+    await flush();
+
     if (file.guestId !== null && maxTotalBytes !== null) {
       await client.query('SELECT 1 FROM guests WHERE id = $1 FOR UPDATE', [file.guestId]);
       const { rows: used } = await client.query<{ used: string }>(
         `SELECT coalesce(sum(size), 0) AS used FROM files WHERE guest_id = $1 AND ${LIVE}`,
         [file.guestId],
       );
-      if (Number(used[0].used) + file.data.length > maxTotalBytes) {
+      if (Number(used[0].used) + total > maxTotalBytes) {
         await client.query('ROLLBACK');
-        return null;
+        return { ok: false, reason: 'quota' };
       }
     }
+    // Expiry counts from the end of the upload (clock_timestamp, not the transaction's start time).
     const { rows } = await client.query<{ expires_at: Date | null }>(
-      `INSERT INTO files (token, name, size, data, pw_salt, pw_hash, no_password, uploader, guest_id, expires_at)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9,
-               CASE WHEN $10::int > 0 THEN now() + $10::int * interval '1 minute' END)
-       RETURNING expires_at`,
-      [
-        token,
-        file.name,
-        file.data.length,
-        file.data,
-        file.password?.salt ?? null,
-        file.password?.hash ?? null,
-        file.password === null,
-        file.uploader,
-        file.guestId,
-        file.expiresInMinutes,
-      ],
+      `UPDATE files SET size = $2,
+         expires_at = CASE WHEN $3::int > 0 THEN clock_timestamp() + $3::int * interval '1 minute' END
+       WHERE token = $1 RETURNING expires_at`,
+      [token, total, file.expiresInMinutes],
     );
     await client.query('COMMIT');
-    return { token, expiresAt: rows[0].expires_at };
+    return { ok: true, token, expiresAt: rows[0].expires_at };
   } catch (e) {
     await client.query('ROLLBACK').catch(() => {});
     throw e;
@@ -135,9 +166,31 @@ export async function findFileInfo(token: string): Promise<FileInfo | null> {
   return { name: r.name, size: Number(r.size), expiresAt: r.expires_at, password };
 }
 
-export async function getFileData(token: string): Promise<Buffer | null> {
-  const { rows } = await pool.query<{ data: Buffer }>(`SELECT data FROM files WHERE token = $1 AND ${LIVE}`, [token]);
-  return rows[0]?.data ?? null;
+/** Streams a live file's contents, or null if it is missing or expired. */
+export async function openFile(token: string): Promise<AsyncGenerator<Buffer> | null> {
+  const { rows } = await pool.query<{ chunked: boolean }>(
+    `SELECT data IS NULL AS chunked FROM files WHERE token = $1 AND ${LIVE}`,
+    [token],
+  );
+  if (!rows[0]) return null;
+  return rows[0].chunked ? readChunks(token) : readLegacy(token);
+}
+
+// Files stored before chunking keep their contents in one column.
+async function* readLegacy(token: string): AsyncGenerator<Buffer> {
+  const { rows } = await pool.query<{ data: Buffer }>('SELECT data FROM files WHERE token = $1', [token]);
+  if (rows[0]?.data) yield rows[0].data;
+}
+
+async function* readChunks(token: string): AsyncGenerator<Buffer> {
+  for (let index = 0; ; index++) {
+    const { rows } = await pool.query<{ data: Buffer }>(
+      'SELECT data FROM file_chunks WHERE token = $1 AND idx = $2',
+      [token, index],
+    );
+    if (!rows[0]) return;
+    yield rows[0].data;
+  }
 }
 
 export async function deleteExpiredFiles(): Promise<number> {
