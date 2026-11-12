@@ -1,7 +1,9 @@
 import crypto from 'crypto';
 import { Identity } from './auth.js';
 import { pool } from './db.js';
-import { commitFile, discardFile, removeFiles, saveStream } from './storage.js';
+import { previewOf } from './preview.js';
+import { commitFile, discardFile, partialPath, removeFiles, saveStream, storedPath } from './storage.js';
+import { Cut, cutVideo } from './trim.js';
 
 /** Salted hash of a download password. */
 export interface PasswordHash {
@@ -24,6 +26,7 @@ export interface NewFile {
   expiresInMinutes: number; // 0 = never
   uploader: string; // display label
   guestId: number | null; // owner, when uploaded by a guest
+  cut?: Cut; // for videos: keep only this part
 }
 
 export interface FileSummary {
@@ -52,6 +55,16 @@ export type StoreResult =
   | { ok: true; token: string; expiresAt: Date | null }
   | { ok: false; reason: 'too-large' | 'quota' };
 
+/** The cut could not be made (not a video, ffmpeg failed, ...). */
+export class CutError extends Error {}
+
+/** The container ffmpeg should write for a video file name (mp4, webm or ogg). Throws CutError if it is not a video. */
+export function videoFormat(name: string): string {
+  const preview = previewOf(name);
+  if (preview?.kind !== 'video') throw new CutError('Only video files can be cut');
+  return preview.contentType.split('/')[1];
+}
+
 export const isToken = (t: string): boolean => /^[A-Za-z0-9_-]{32}$/.test(t);
 
 // Expired files are treated as gone even before the cleanup job removes them.
@@ -73,8 +86,17 @@ export async function storageUsed(guestId: number): Promise<number> {
  */
 export async function insertFile(file: NewFile, maxTotalBytes: number | null): Promise<StoreResult> {
   const token = crypto.randomBytes(24).toString('base64url');
-  const size = await saveStream(token, file.source, file.maxBytes);
+  let size = await saveStream(token, file.source, file.maxBytes);
   if (size === null) return { ok: false, reason: 'too-large' };
+  if (file.cut) {
+    // Only the clip is kept; it is never larger than what was just received, so the size limit still holds.
+    try {
+      size = await cutVideo(partialPath(token), videoFormat(file.name), file.cut);
+    } catch (e) {
+      await discardFile(token);
+      throw new CutError(e instanceof Error ? e.message : 'Could not cut the video');
+    }
+  }
 
   const client = await pool.connect();
   try {
@@ -142,6 +164,25 @@ export async function findFileInfo(token: string): Promise<FileInfo | null> {
   // A stored hash always wins, so a stray flag can never make a protected file public.
   const password = r.pw_salt && r.pw_hash ? { salt: r.pw_salt, hash: r.pw_hash } : null;
   return { name: r.name, size: Number(r.size), expiresAt: r.expires_at, password };
+}
+
+export async function fileName(token: string): Promise<string | null> {
+  const { rows } = await pool.query<{ name: string }>('SELECT name FROM files WHERE token = $1', [token]);
+  return rows[0]?.name ?? null;
+}
+
+/** Cuts an already stored video down to the range, replacing the original. Returns false if there is no such file. */
+export async function cutStoredVideo(token: string, cut: Cut): Promise<boolean> {
+  const name = await fileName(token);
+  if (name === null) return false;
+  let size: number;
+  try {
+    size = await cutVideo(storedPath(token), videoFormat(name), cut);
+  } catch (e) {
+    throw e instanceof CutError ? e : new CutError(e instanceof Error ? e.message : 'Could not cut the video');
+  }
+  await pool.query('UPDATE files SET size = $2 WHERE token = $1', [token, size]);
+  return true;
 }
 
 export async function deleteExpiredFiles(): Promise<number> {

@@ -36,3 +36,34 @@ async function api(method, path, body) {
   if (!res.ok) throw new Error(json.error || 'Request failed');
   return json;
 }
+
+// ---------- Cutting videos ----------
+
+const isVideoName = (name) => /\.(mp4|m4v|webm|ogv)$/i.test(name);
+
+// Start/end fields (in seconds) for cutting a video, with buttons that take the position of the <video>.
+// Empty fields mean "from the beginning" / "to the end".
+function cutEditor(video) {
+  const seconds = (value) => String(Math.round(value * 100) / 100);
+  const start = h('input', { type: 'number', min: '0', step: 'any', placeholder: 'Start (seconds)' });
+  const end = h('input', { type: 'number', min: '0', step: 'any', placeholder: 'End (seconds)' });
+  const take = (input, label) =>
+    h('button', { type: 'button', class: 'secondary', onclick: () => (input.value = seconds(video.currentTime)) }, label);
+  return {
+    el: h(
+      'div',
+      { class: 'cut' },
+      h('div', { class: 'meta' }, 'Cut the video: play to the right spot, then use the buttons. The cut is not exact; it starts at the nearest earlier keyframe.'),
+      h('div', { class: 'row' }, start, take(start, 'Start = current time')),
+      h('div', { class: 'row' }, end, take(end, 'End = current time')),
+    ),
+    /** The chosen range as strings (empty = not set). Throws if the end is not after the start. */
+    read() {
+      const range = { start: start.value.trim(), end: end.value.trim() };
+      if (range.end !== '' && Number(range.end) <= Number(range.start || 0)) {
+        throw new Error('The end must be after the start');
+      }
+      return range;
+    },
+  };
+}

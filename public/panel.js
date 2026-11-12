@@ -82,11 +82,36 @@ async function toggleDownloads(token, box) {
   box.hidden = false;
 }
 
+let canCut = false;
+
+// Editor for cutting a stored video: it replaces the original with the clip.
+function cutBox(file, box) {
+  const video = h('video', { src: `/api/files/${file.token}/raw`, preload: 'metadata' });
+  video.controls = true;
+  const editor = cutEditor(video);
+  box.replaceChildren(
+    video,
+    editor.el,
+    button('Cut and replace the video', async () => {
+      const range = editor.read();
+      if (range.start === '' && range.end === '') throw new Error('Set a start or an end time first');
+      if (!confirm(`Cut "${file.name}"? The original video is replaced by the clip. This cannot be undone.`)) return;
+      await api('POST', `/files/${file.token}/cut`, {
+        start: range.start === '' ? null : Number(range.start),
+        end: range.end === '' ? null : Number(range.end),
+      });
+      await loadFiles();
+    }),
+  );
+}
+
 function fileCard(file) {
   const link = `${location.origin}/d/${file.token}`;
   const expired = file.expiresAt && new Date(file.expiresAt) <= new Date();
   const log = h('div', { class: 'meta log' });
   log.hidden = true;
+  const cutArea = h('div', { class: 'log' });
+  cutArea.hidden = true;
 
   const edit = async (changes) => {
     await api('PATCH', `/files/${file.token}`, changes);
@@ -118,6 +143,12 @@ function fileCard(file) {
           if (!confirm(`Remove the password from "${file.name}"? Anyone with the link will be able to download it.`)) return;
           await edit({ downloadPassword: null });
         }),
+      canCut &&
+        isVideoName(file.name) &&
+        button('Cut video', async () => {
+          if (cutArea.hidden) cutBox(file, cutArea);
+          cutArea.hidden = !cutArea.hidden;
+        }),
       button('Expiry', async () => {
         const answer = prompt('Delete after how many minutes from now? (0 = never)', '60');
         if (answer !== null && answer.trim() !== '') await edit({ expiresInMinutes: Number(answer) });
@@ -133,6 +164,7 @@ function fileCard(file) {
       ),
     ),
     log,
+    cutArea,
   );
 }
 
@@ -262,4 +294,7 @@ if ($('guestForm')) {
   run(loadGuests);
 }
 
-run(loadFiles);
+run(async () => {
+  canCut = (await api('GET', '/limits')).canCut;
+  await loadFiles();
+});

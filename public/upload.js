@@ -54,6 +54,7 @@ function showError(message) {
 const PREVIEW_TEXT = /\.(txt|md|log|csv|tsv|json|xml|ya?ml|ini|conf|toml|m?js|ts|py|sh|bat|css|java|c|h|cpp|go|rs|rb|php|sql)$/i;
 const PREVIEW_TEXT_LIMIT = 256 * 1024;
 let previewUrl = null;
+let cutUi = null; // start/end fields, for a chosen video
 
 async function showPreview() {
   const box = $('preview');
@@ -61,6 +62,7 @@ async function showPreview() {
   previewUrl = null;
   box.replaceChildren();
   box.hidden = true;
+  cutUi = null;
 
   const file = $('file').files[0];
   if (!file) return;
@@ -72,6 +74,10 @@ async function showPreview() {
     const video = h('video', { src: previewUrl });
     video.controls = true;
     box.append(video);
+    if (limits?.canCut) {
+      cutUi = cutEditor(video);
+      box.append(cutUi.el);
+    }
   } else if (PREVIEW_TEXT.test(file.name)) {
     const text = await file.slice(0, PREVIEW_TEXT_LIMIT).text();
     if ($('file').files[0] !== file) return; // another file was picked meanwhile
@@ -125,6 +131,20 @@ $('uploadForm').addEventListener('submit', async (e) => {
     return showError(`File too large (maximum ${Math.floor(limits.maxSizeBytes / 1024 / 1024)} MB)`);
   }
 
+  // Optional cut: only the chosen part of a video is kept.
+  const cutHeaders = {};
+  if (cutUi) {
+    try {
+      const range = cutUi.read();
+      if (range.start !== '' || range.end !== '') {
+        cutHeaders['x-cut-start'] = range.start;
+        cutHeaders['x-cut-end'] = range.end;
+      }
+    } catch (err) {
+      return showError(err.message);
+    }
+  }
+
   $('msg').className = '';
   $('msg').textContent = 'Uploading... 0%';
   $('go').disabled = true;
@@ -139,6 +159,7 @@ $('uploadForm').addEventListener('submit', async (e) => {
       'x-no-password': $('nopw').checked ? '1' : '0',
       'x-expires-minutes': $('exp').value,
       'x-filename': encodeURIComponent(file.name),
+      ...cutHeaders,
     });
     if (status === 401) return (location.href = '/login');
     if (status < 200 || status >= 300) throw new Error(json.error || 'Upload failed');

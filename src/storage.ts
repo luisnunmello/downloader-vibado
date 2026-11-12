@@ -8,6 +8,8 @@ import { DATA_DIR } from './config.js';
 // so they are always safe to use as file names. Uploads are written to "<token>.part" first.
 const DIR = path.join(DATA_DIR, 'files');
 const finalPath = (token: string): string => path.join(DIR, token);
+/** Absolute path of an upload still being received. */
+export const partialPath = (token: string): string => path.resolve(partPath(token));
 /** Absolute path of a stored file (for res.sendFile). */
 export const storedPath = (token: string): string => path.resolve(finalPath(token));
 const partPath = (token: string): string => path.join(DIR, `${token}.part`);

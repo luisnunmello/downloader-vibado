@@ -180,6 +180,15 @@ progress {
   border-radius: 6px;
   font-size: 0.85rem;
 }
+.cut .row {
+  margin: 6px 0;
+}
+.log video {
+  display: block;
+  max-width: 100%;
+  max-height: 50vh;
+  margin-bottom: 8px;
+}
 .err {
   color: #b91c1c;
 }
