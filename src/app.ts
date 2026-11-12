@@ -6,6 +6,7 @@ import fileRoutes from './routes/files.js';
 import guestRoutes from './routes/guests.js';
 import panelRoutes from './routes/panel.js';
 import settingsRoutes from './routes/settings.js';
+import videoRoutes from './routes/video.js';
 import { messagePage, render } from './views.js';
 
 export function createApp() {
@@ -31,6 +32,7 @@ export function createApp() {
   app.use(fileRoutes);
   app.use(guestRoutes);
   app.use(settingsRoutes);
+  app.use(videoRoutes);
   app.use(downloadRoutes);
   app.use((_req, res) => res.status(404).send(messagePage('Not found')));
 

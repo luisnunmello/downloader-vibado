@@ -18,7 +18,7 @@ const partPath = (token: string): string => path.join(DIR, `${token}.part`);
 export async function initStorage(): Promise<void> {
   await mkdir(DIR, { recursive: true });
   for (const name of await readdir(DIR)) {
-    if (name.endsWith('.part')) await rm(path.join(DIR, name), { force: true });
+    if (name.endsWith('.part') || name.endsWith('.draft')) await rm(path.join(DIR, name), { force: true });
   }
 }
 
@@ -65,6 +65,9 @@ export async function discardFile(token: string, openStream?: fs.WriteStream): P
   await rm(finalPath(token), { force: true, maxRetries: 3 });
 }
 
+/** Absolute path of an edited video (cut/compressed) the owner has not accepted yet. */
+export const draftPath = (token: string): string => path.resolve(`${finalPath(token)}.draft`);
+
 /** Absolute path of a video's cached thumbnail (made on demand for link embeds). */
 export const thumbnailPath = (token: string): string => path.resolve(`${finalPath(token)}.jpg`);
 
@@ -76,6 +79,7 @@ export async function removeFiles(tokens: string[]): Promise<void> {
   for (const token of tokens) {
     await rm(finalPath(token), { force: true, maxRetries: 3 }).catch((e) => console.error('Could not remove file:', e));
     await removeThumbnail(token);
+    await rm(draftPath(token), { force: true }).catch(() => {});
   }
 }
 

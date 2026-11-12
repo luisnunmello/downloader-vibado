@@ -82,26 +82,24 @@ async function toggleDownloads(token, box) {
   box.hidden = false;
 }
 
-let canCut = false;
+let canEditVideo = false;
+let videoPresets = [];
 
-// Editor for cutting a stored video: it replaces the original with the clip.
-function cutBox(file, box) {
+// Editor for a stored video: cut and/or compress, look at the result, then keep it or not.
+function videoBox(file, box) {
   const video = h('video', { src: `/api/files/${file.token}/raw`, preload: 'metadata' });
   video.controls = true;
-  const editor = cutEditor(video);
+  const options = videoOptions(video, file.size, videoPresets);
+  const review = h('div');
   box.replaceChildren(
     video,
-    editor.el,
-    button('Cut and replace the video', async () => {
-      const range = editor.read();
-      if (range.start === '' && range.end === '') throw new Error('Set a start or an end time first');
-      if (!confirm(`Cut "${file.name}"? The original video is replaced by the clip. This cannot be undone.`)) return;
-      await api('POST', `/files/${file.token}/cut`, {
-        start: range.start === '' ? null : Number(range.start),
-        end: range.end === '' ? null : Number(range.end),
-      });
-      await loadFiles();
+    options.el,
+    button('Make the result and preview it', async () => {
+      const request = options.read();
+      if (!request) throw new Error('Set a start or end time, or pick a lower quality, first');
+      review.replaceChildren(videoReview(file.token, request, () => loadFiles()));
     }),
+    review,
   );
 }
 
@@ -110,8 +108,8 @@ function fileCard(file) {
   const expired = file.expiresAt && new Date(file.expiresAt) <= new Date();
   const log = h('div', { class: 'meta log' });
   log.hidden = true;
-  const cutArea = h('div', { class: 'log' });
-  cutArea.hidden = true;
+  const editArea = h('div', { class: 'log' });
+  editArea.hidden = true;
 
   const edit = async (changes) => {
     await api('PATCH', `/files/${file.token}`, changes);
@@ -143,11 +141,11 @@ function fileCard(file) {
           if (!confirm(`Remove the password from "${file.name}"? Anyone with the link will be able to download it.`)) return;
           await edit({ downloadPassword: null });
         }),
-      canCut &&
+      canEditVideo &&
         isVideoName(file.name) &&
-        button('Cut video', async () => {
-          if (cutArea.hidden) cutBox(file, cutArea);
-          cutArea.hidden = !cutArea.hidden;
+        button('Edit video', async () => {
+          if (editArea.hidden) videoBox(file, editArea);
+          editArea.hidden = !editArea.hidden;
         }),
       button('Expiry', async () => {
         const answer = prompt('Delete after how many minutes from now? (0 = never)', '60');
@@ -164,7 +162,7 @@ function fileCard(file) {
       ),
     ),
     log,
-    cutArea,
+    editArea,
   );
 }
 
@@ -295,6 +293,8 @@ if ($('guestForm')) {
 }
 
 run(async () => {
-  canCut = (await api('GET', '/limits')).canCut;
+  const limits = await api('GET', '/limits');
+  canEditVideo = limits.canEditVideo;
+  videoPresets = limits.videoPresets;
   await loadFiles();
 });

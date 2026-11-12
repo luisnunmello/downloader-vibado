@@ -2,8 +2,6 @@ import express, { Response, Router } from 'express';
 import { MAX_EXPIRY_MINUTES } from '../config.js';
 import {
   canManage,
-  CutError,
-  cutStoredVideo,
   deleteFile,
   FileChanges,
   insertFile,
@@ -19,7 +17,8 @@ import { limitsFor } from '../limits.js';
 import { hashPassword } from '../password.js';
 import { previewOf } from '../preview.js';
 import { storedPath } from '../storage.js';
-import { ffmpegAvailable, parseCut } from '../trim.js';
+import { ffmpegAvailable } from '../trim.js';
+import { PRESETS } from '../video.js';
 import { currentIdentity, requireAuth } from '../session.js';
 
 // No minimum length, but an empty password is not a password: use "no password" for open downloads.
@@ -28,7 +27,7 @@ const isValidMinutes = (v: unknown): v is number =>
   typeof v === 'number' && Number.isInteger(v) && v >= 0 && v <= MAX_EXPIRY_MINUTES;
 
 /** Sends 404 (not 403, so tokens of other people's files are not confirmed) unless the user may manage the file. */
-async function authorize(res: Response, token: string): Promise<boolean> {
+export async function authorize(res: Response, token: string): Promise<boolean> {
   if (isToken(token) && (await canManage(currentIdentity(res), token))) return true;
   res.status(404).json({ error: 'Not found' });
   return false;
@@ -41,7 +40,7 @@ router.use(['/api/files', '/api/limits'], requireAuth);
 
 // What the signed-in user may upload, so the upload page can show and enforce it.
 router.get('/api/limits', async (_req, res) => {
-  res.json({ ...(await limitsFor(currentIdentity(res))), canCut: await ffmpegAvailable() });
+  res.json({ ...(await limitsFor(currentIdentity(res))), canEditVideo: await ffmpegAvailable(), videoPresets: PRESETS });
 });
 
 router.get('/api/files', async (_req, res) => {
@@ -76,22 +75,11 @@ router.put('/api/files', async (req, res) => {
         : { error: `File too large (maximum ${mb(limits.maxSizeBytes)} MB)` };
     if (Number(req.get('content-length') || 0) > maxBytes) return res.status(413).json(tooLarge());
 
-    // Optional: keep only part of a video (seconds).
-    const cutStart = req.get('x-cut-start');
-    const cutEnd = req.get('x-cut-end');
-    let cut;
-    if (cutStart || cutEnd) {
-      cut = parseCut(cutStart, cutEnd);
-      if (!cut) return res.status(400).json({ error: 'Invalid cut: the end must be after the start' });
-      if (!(await ffmpegAvailable())) return res.status(400).json({ error: 'Cutting videos is not available on this server' });
-    }
-
     const stored = await insertFile(
       {
         name: cleanFilename(headerValue(req, 'x-filename')),
         source: req, // streamed into the database, never held in memory whole
         maxBytes,
-        cut,
         password: noPassword ? null : await hashPassword(downloadPassword),
         expiresInMinutes: minutes,
         uploader: identity.role === 'master' ? MASTER_LABEL : identity.name,
@@ -109,7 +97,6 @@ router.put('/api/files', async (req, res) => {
     res.json({ link: `/d/${stored.token}`, expiresAt: stored.expiresAt });
   } catch (e) {
     if (req.destroyed) return; // the client cancelled or lost connection; nothing was stored
-    if (e instanceof CutError) return res.status(400).json({ error: `Could not cut the video: ${e.message}` });
     console.error(e);
     if (!res.headersSent) res.status(500).json({ error: 'Server error' });
   }
@@ -158,21 +145,6 @@ router.get('/api/files/:token/raw', async (req, res) => {
   res.sendFile(storedPath(req.params.token), (err) => {
     if (err && !res.headersSent) res.status(404).json({ error: 'Not found' });
   });
-});
-
-// Cuts a stored video, replacing it with the clip. Body: { start?: seconds, end?: seconds }.
-router.post('/api/files/:token/cut', express.json({ limit: '1kb' }), async (req, res) => {
-  if (!(await authorize(res, req.params.token))) return;
-  const cut = parseCut(req.body?.start, req.body?.end);
-  if (!cut) return res.status(400).json({ error: 'Invalid cut: the end must be after the start' });
-  if (!(await ffmpegAvailable())) return res.status(400).json({ error: 'Cutting videos is not available on this server' });
-  try {
-    if (!(await cutStoredVideo(req.params.token, cut))) return res.status(404).json({ error: 'Not found' });
-    res.json({ ok: true });
-  } catch (e) {
-    if (e instanceof CutError) return res.status(400).json({ error: `Could not cut the video: ${e.message}` });
-    throw e;
-  }
 });
 
 router.delete('/api/files/:token', async (req, res) => {

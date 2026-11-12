@@ -2,8 +2,8 @@ import { spawn } from 'child_process';
 import crypto from 'crypto';
 import { rename, rm, stat } from 'fs/promises';
 
-// Cutting videos needs ffmpeg on the server (the Docker image includes it). Without it, the feature is
-// switched off in the pages instead of failing.
+// Everything that uses ffmpeg/ffprobe (thumbnails, cutting, compressing). Without them on the server
+// (the Docker image has them), the features are switched off in the pages instead of failing.
 let available: Promise<boolean> | null = null;
 export const ffmpegAvailable = (): Promise<boolean> =>
   (available ??= new Promise((resolve) => {
@@ -11,6 +11,8 @@ export const ffmpegAvailable = (): Promise<boolean> =>
     probe.on('error', () => resolve(false));
     probe.on('exit', (code) => resolve(code === 0));
   }));
+
+export class TrimError extends Error {}
 
 const sizes = new Map<string, { width: number; height: number }>();
 
@@ -39,8 +41,32 @@ export async function videoSize(key: string, file: string): Promise<{ width: num
   return result;
 }
 
+/** Length in seconds and overall bitrate in kbit/s of a video file, or null if ffprobe cannot read it. */
+export async function probeVideo(file: string): Promise<{ seconds: number; kbps: number } | null> {
+  return new Promise((resolve) => {
+    const proc = spawn(
+      'ffprobe',
+      ['-v', 'error', '-show_entries', 'format=duration,bit_rate', '-of', 'json', file],
+      { stdio: ['ignore', 'pipe', 'ignore'] },
+    );
+    let out = '';
+    proc.stdout.on('data', (d) => (out += d));
+    proc.on('error', () => resolve(null));
+    proc.on('exit', () => {
+      try {
+        const format = JSON.parse(out).format;
+        const seconds = Number(format.duration);
+        const kbps = Number(format.bit_rate) / 1000;
+        resolve(seconds > 0 ? { seconds, kbps: kbps > 0 ? kbps : 0 } : null);
+      } catch {
+        resolve(null);
+      }
+    });
+  });
+}
+
 /**
- * Writes a JPEG still from the video to `out` (for link embeds, when the video is too big to play inline).
+ * Writes a JPEG still from the video to `out` (for link embeds and the video poster).
  * Takes the frame at one second, or the first frame for shorter videos.
  */
 export async function makeThumbnail(file: string, out: string): Promise<void> {
@@ -64,65 +90,6 @@ export async function makeThumbnail(file: string, out: string): Promise<void> {
     await rename(tmp, out);
   } catch (e) {
     await rm(tmp, { force: true });
-    throw e;
-  }
-}
-
-export class TrimError extends Error {}
-
-export interface Cut {
-  start: number; // seconds
-  end: number | null; // seconds; null = to the end
-}
-
-const MAX_SECONDS = 10_000_000;
-
-/** Reads start/end seconds (either may be empty). Returns null if they are not a sensible range. */
-export function parseCut(startRaw: unknown, endRaw: unknown): Cut | null {
-  const empty = (v: unknown) => v === undefined || v === null || v === '';
-  const start = empty(startRaw) ? 0 : Number(startRaw);
-  const end = empty(endRaw) ? null : Number(endRaw);
-  if (!Number.isFinite(start) || start < 0 || start > MAX_SECONDS) return null;
-  if (end !== null && (!Number.isFinite(end) || end <= start || end > MAX_SECONDS)) return null;
-  if (start === 0 && end === null) return null; // that is the whole video: nothing to cut
-  return { start, end };
-}
-
-/**
- * Cuts the video at `file` down to the given range and replaces it with the clip. Returns the clip's size.
- * The video is not re-encoded (fast, no quality loss), so the start snaps to the nearest keyframe before it.
- * `format` is the container: mp4, webm or ogg.
- */
-export async function cutVideo(file: string, format: string, cut: Cut): Promise<number> {
-  const out = `${file}.${crypto.randomBytes(4).toString('hex')}.part`;
-  const args = ['-v', 'error', '-y', '-ss', String(cut.start)];
-  if (cut.end !== null) args.push('-to', String(cut.end));
-  args.push('-i', file, '-c', 'copy', '-avoid_negative_ts', 'make_zero');
-  if (format === 'mp4') args.push('-movflags', '+faststart');
-  args.push('-f', format, out);
-
-  try {
-    await new Promise<void>((resolve, reject) => {
-      const proc = spawn('ffmpeg', args, { stdio: ['ignore', 'ignore', 'pipe'] });
-      let log = '';
-      proc.stderr.on('data', (d) => (log = (log + d).slice(-1000)));
-      const timer = setTimeout(() => proc.kill('SIGKILL'), 30 * 60 * 1000);
-      proc.on('error', (e) => {
-        clearTimeout(timer);
-        reject(new TrimError(`ffmpeg could not run: ${e.message}`));
-      });
-      proc.on('exit', (code) => {
-        clearTimeout(timer);
-        if (code === 0) resolve();
-        else reject(new TrimError(`ffmpeg failed: ${log.trim() || `exit code ${code}`}`));
-      });
-    });
-    const { size } = await stat(out);
-    if (size === 0) throw new TrimError('The cut is empty: check the start and end times');
-    await rename(out, file);
-    return size;
-  } catch (e) {
-    await rm(out, { force: true });
     throw e;
   }
 }
