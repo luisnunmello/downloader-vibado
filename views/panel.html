@@ -11,7 +11,7 @@
 
 {{#if admin}}
 <h2>Server settings</h2>
-<p class="meta">The largest file anyone can upload, the master included. Guests with a lower limit keep it. Files are streamed in chunks, so size is limited by free disk space, not memory. Behind a reverse proxy, raise the proxy's own upload limit too.</p>
+<p class="meta">The largest file anyone can upload, the master included. Guests with a lower limit keep it. Files are streamed to disk, so size is limited by free disk space, not memory. Behind a reverse proxy, raise the proxy's own upload limit too.</p>
 <p id="space" class="meta"></p>
 <form id="settingsForm" class="row">
   <input id="smax" type="number" min="1" step="1" placeholder="Maximum file size (MB)" required>

@@ -14,7 +14,7 @@ const trustProxy = process.env.TRUST_PROXY;
 export const TRUST_PROXY: number | string | undefined =
   trustProxy === undefined || trustProxy === '' ? undefined : Number.isNaN(Number(trustProxy)) ? trustProxy : Number(trustProxy);
 
-// Files are stored in 1 MB chunks and streamed, so size is limited by disk, not memory. This is the
+// Files are streamed to and from disk, so size is limited by free disk space, not memory. This is the
 // highest value the server maximum can be set to (1 TB), as a sanity bound.
 export const HARD_MAX_SIZE_MB = 1_000_000;
 // The server maximum until the master changes it in the app.
@@ -24,6 +24,9 @@ export const DEFAULT_SERVER_MAX_MB = 1000;
 export const MAX_SIZE = Math.min(Number(process.env.MAX_SIZE_MB || 100), HARD_MAX_SIZE_MB) * 1024 * 1024;
 export const MAX_EXPIRY_MINUTES = 365 * 24 * 60;
 export const CLEANUP_INTERVAL_MS = 60 * 1000;
+
+// Where uploaded files are stored (in a "files" subfolder). In Docker this is a volume.
+export const DATA_DIR = process.env.DATA_DIR || path.join(ROOT, 'data');
 
 export const VIEWS_DIR = path.join(ROOT, 'views');
 export const PUBLIC_DIR = path.join(ROOT, 'public');

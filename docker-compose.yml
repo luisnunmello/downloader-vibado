@@ -7,7 +7,10 @@ services:
       DATABASE_URL: postgres://downloader:${DB_PASSWORD:-downloader}@db:5432/downloader
       MASTER_PASSWORD: ${MASTER_PASSWORD:?set MASTER_PASSWORD in .env}
       MAX_SIZE_MB: ${MAX_SIZE_MB:-100}
+      DATA_DIR: /data
       TRUST_PROXY: ${TRUST_PROXY:-}
+    volumes:
+      - files:/data
     depends_on:
       db:
         condition: service_healthy
@@ -30,3 +33,4 @@ services:
 
 volumes:
   pgdata:
+  files:

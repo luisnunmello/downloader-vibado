@@ -7,7 +7,7 @@ A small password-protected file sharing site built with Express, TypeScript and 
 - **Guests** get their own page to manage the files they uploaded. The master can set a maximum file size, a maximum lifetime and a total storage quota per guest.
 - **Each upload gets its own download password** (or none, if you choose) and an unguessable link.
 - Uploads can **expire** and be deleted automatically.
-- Files, passwords, sessions and the download history are stored in Postgres.
+- Files are stored on disk (`DATA_DIR`); Postgres holds the passwords, sessions, file details and the download history.
 
 ## How it works
 
@@ -30,7 +30,7 @@ A small password-protected file sharing site built with Express, TypeScript and 
 
 **Limits**
 
-- The master has no per-user size limit. The **server maximum** applies to everyone, the master included. It starts at 1000 MB and the master can change it, up to 1 TB, in the app under "Server settings" on the admin page. Files are streamed to and from Postgres in 1 MB chunks, so memory use stays small whatever the file size; what limits you is free disk space (shown on the same page) and, behind a reverse proxy, the proxy's own upload limit (for nginx, `client_max_body_size`).
+- The master has no per-user size limit. The **server maximum** applies to everyone, the master included. It starts at 1000 MB and the master can change it, up to 1 TB, in the app under "Server settings" on the admin page. Files are streamed to and from disk, so memory use stays small whatever the file size; what limits you is free disk space (shown on the same page) and, behind a reverse proxy, the proxy's own upload limit (for nginx, `client_max_body_size`).
 - Each guest can have a **max file size** (in MB, up to the server maximum). Without one, the server default `MAX_SIZE_MB` applies.
 - Each guest can have a **max expiry**, picked from common choices (10 minutes to 30 days) or a custom amount in minutes, hours or days. When set, the guest's files must expire within that time and "never" is not offered.
 - Each guest can have a **total storage quota** in MB: the combined size of all their files that have not expired. Deleting or expiring a file frees space. An upload that does not fit in what is left is refused, and the check is repeated atomically when the file is stored, so simultaneous uploads cannot exceed the quota. The upload page shows "Storage used: X of Y", and the admin page shows each guest's usage.
@@ -82,6 +82,7 @@ On PowerShell, set variables with `$env:NAME="value"` instead of `export`.
 | `DATABASE_URL` | `postgres://postgres:postgres@localhost:5432/downloader` | Postgres connection string |
 | `MASTER_PASSWORD` | none | Seeds the master password on first start |
 | `PORT` | `3000` | HTTP port |
+| `DATA_DIR` | `./data` | Folder for uploaded files (`/data` in Docker, a named volume) |
 | `MAX_SIZE_MB` | `100` | Default maximum upload size in MB for guests without their own limit (never above the server maximum, which the master sets in the app; the server maximum is at most 1 TB) |
 | `TRUST_PROXY` | unset | Set to `1` (or an Express trust-proxy value) when behind a reverse proxy |
 | `DB_PASSWORD` | `downloader` | Postgres password (Docker Compose only) |
@@ -105,7 +106,7 @@ On startup the app migrates the database in place:
 - Uploading moved from the admin and guest pages to its own page, `/upload`.
 - Files uploaded before per-file download passwords existed stay unavailable (they are not made public). Open the file in the admin page and use "Set password" to make it downloadable again, or "Remove password" to share it freely.
 - The short-lived per-guest "max number of files" setting is replaced by the storage quota; its column is dropped.
-- Files stored before chunking keep working: their contents stay in `files.data`, and new files are stored as chunks.
+- Files that older versions kept inside Postgres are moved to disk automatically on the first start (then the old storage is dropped). If a move fails, nothing is dropped and the log says which file.
 - Passwords hashed with the old scrypt scheme no longer verify. Run `npm run set-password` and re-upload the affected files.
 
 ## Database schema
@@ -115,11 +116,9 @@ credentials (role TEXT PRIMARY KEY, salt BYTEA, hash BYTEA)          -- only the
 guests      (id SERIAL PRIMARY KEY, name TEXT, salt BYTEA, hash BYTEA, created_at TIMESTAMPTZ,
              max_size_mb INT NULL, max_expiry_minutes INT NULL,        -- NULL = default size / no expiry limit
              max_total_mb INT NULL)                                    -- NULL = no limit
-files       (token TEXT PRIMARY KEY, name TEXT, size BIGINT, data BYTEA NULL, uploader TEXT,   -- data only on files from before chunking
+files       (token TEXT PRIMARY KEY, name TEXT, size BIGINT, uploader TEXT,        -- contents are on disk, not here
              guest_id INT REFERENCES guests ON DELETE SET NULL,
              pw_salt BYTEA, pw_hash BYTEA, no_password BOOLEAN, expires_at TIMESTAMPTZ NULL, created_at TIMESTAMPTZ)
-file_chunks (token TEXT REFERENCES files ON DELETE CASCADE, idx INT, data BYTEA,
-             PRIMARY KEY (token, idx))
 settings    (key TEXT PRIMARY KEY, value TEXT)                       -- e.g. the server maximum size
 downloads   (id BIGSERIAL PRIMARY KEY, token TEXT REFERENCES files ON DELETE CASCADE,
              downloaded_at TIMESTAMPTZ, ip TEXT)
@@ -129,12 +128,12 @@ sessions    (token_hash TEXT PRIMARY KEY, role TEXT, guest_id INT REFERENCES gue
 
 ## Limitations
 
-- **Large files:** an upload is stored in one database transaction, so a failed or cancelled upload leaves nothing behind, and it holds one database connection for its duration. Postgres storage is the limit, so watch the free disk space shown on the admin page. A 10 GB file also means a 10 GB database; plan backups accordingly.
+- **Where files are stored:** on disk, in `DATA_DIR/files` (the `files` Docker volume, mounted at `/data`), one file per download token. Postgres holds only the details (names, passwords, expiry, owners, download history). **Back up both the database and the files volume**; one without the other is incomplete. An upload is written to a temporary `.part` file and only becomes a real file once its database row is saved, so a failed upload leaves nothing behind.
 - **No HTTPS:** the app serves plain HTTP. Put it behind a reverse proxy that terminates TLS, or the passwords travel unencrypted. This matters most for the master password.
 - **Behind a proxy:** set `TRUST_PROXY=1`. Without it, every visitor appears as the proxy's address (they share one rate-limit budget and the download log shows the proxy IP), and the session cookie is not marked `Secure`.
 - **Download log keeps IP addresses.** Deleting a file deletes its log. Keep this in mind for privacy rules that apply to you.
 - **Expiry is by time only:** there is no "delete after first download" option.
-- **Disk space:** Postgres may not return the space of deleted files to the operating system right away.
+- **Disk space:** deleted and expired files are removed from disk right away. Watch the free space shown on the admin page.
 
 ## Project layout
 

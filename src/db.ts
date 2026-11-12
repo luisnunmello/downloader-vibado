@@ -14,7 +14,6 @@ export async function migrate(): Promise<void> {
       token TEXT PRIMARY KEY,
       name TEXT NOT NULL,
       size BIGINT NOT NULL,
-      data BYTEA NOT NULL,
       created_at TIMESTAMPTZ NOT NULL DEFAULT now()
     );
     ALTER TABLE files ADD COLUMN IF NOT EXISTS pw_salt BYTEA;
@@ -77,15 +76,16 @@ export async function migrate(): Promise<void> {
       value TEXT NOT NULL
     );
 
-    -- File contents are stored as 1 MB chunks so big files can be streamed. Older files keep their
-    -- contents in files.data (new files leave it NULL).
-    ALTER TABLE files ALTER COLUMN data DROP NOT NULL;
-    CREATE TABLE IF NOT EXISTS file_chunks (
-      token TEXT NOT NULL REFERENCES files(token) ON DELETE CASCADE,
-      idx INTEGER NOT NULL,
-      data BYTEA NOT NULL,
-      PRIMARY KEY (token, idx)
-    );
+    -- File contents live on disk now. Databases from older versions still have files.data and
+    -- file_chunks until moveLegacyFilesToDisk (src/legacy.ts) moves them and drops both; until then
+    -- new rows must be allowed to have no data.
+    DO $$ BEGIN
+      IF EXISTS (
+        SELECT 1 FROM information_schema.columns WHERE table_name = 'files' AND column_name = 'data'
+      ) THEN
+        ALTER TABLE files ALTER COLUMN data DROP NOT NULL;
+      END IF;
+    END $$;
 
     CREATE TABLE IF NOT EXISTS sessions (
       token_hash TEXT PRIMARY KEY,

@@ -3,6 +3,8 @@ import { seedMasterPassword } from './auth.js';
 import { CLEANUP_INTERVAL_MS, MASTER_PASSWORD, PORT } from './config.js';
 import { migrate } from './db.js';
 import { deleteExpiredFiles } from './files.js';
+import { moveLegacyFilesToDisk } from './legacy.js';
+import { initStorage } from './storage.js';
 import { deleteExpiredSessions } from './session.js';
 
 async function cleanup(): Promise<void> {
@@ -17,6 +19,8 @@ async function cleanup(): Promise<void> {
 
 async function main(): Promise<void> {
   await migrate();
+  await initStorage();
+  await moveLegacyFilesToDisk();
   await seedMasterPassword(MASTER_PASSWORD);
 
   await cleanup();

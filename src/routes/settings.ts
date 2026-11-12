@@ -1,6 +1,6 @@
 import express, { Router } from 'express';
 import { statfs } from 'fs/promises';
-import { HARD_MAX_SIZE_MB } from '../config.js';
+import { DATA_DIR, HARD_MAX_SIZE_MB } from '../config.js';
 import { pool } from '../db.js';
 import { requireAuth, requireMaster } from '../session.js';
 import { getServerMaxMb, setServerMaxMb } from '../settings.js';
@@ -8,10 +8,10 @@ import { getServerMaxMb, setServerMaxMb } from '../settings.js';
 const router = Router();
 router.use('/api/settings', requireAuth, requireMaster, express.json({ limit: '1kb' }));
 
-/** Disk space of the filesystem the server runs on. In Docker this is the host disk that holds the database volume. */
+/** Free and total space of the disk that holds the uploaded files. */
 async function diskSpace(): Promise<{ freeBytes: number; totalBytes: number } | null> {
   try {
-    const s = await statfs(process.cwd());
+    const s = await statfs(DATA_DIR);
     return { freeBytes: s.bavail * s.bsize, totalBytes: s.blocks * s.bsize };
   } catch {
     return null;
