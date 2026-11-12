@@ -1,9 +1,15 @@
 <h1>Download</h1>
 <p>{{name}} ({{size}} MB)</p>
 {{#if expires}}<p>Available until {{expires}} UTC</p>{{/if}}
+{{#if previewSrc}}
+<div id="preview" class="preview" data-kind="{{previewKind}}" data-src="{{previewSrc}}" data-bytes="{{previewBytes}}" data-poster="{{previewPoster}}"></div>
+<p id="note" class="meta"></p>
+{{/if}}
 {{#if error}}<p class="err">{{error}}</p>{{/if}}
 <form method="post">
   {{#if needsPassword}}<input name="password" type="password" placeholder="Download password" required autofocus>{{/if}}
+  {{#if key}}<input type="hidden" name="key" value="{{key}}">{{/if}}
   <button>Download</button>
-  {{#if previewable}}<button name="preview" value="1" formtarget="_blank" class="secondary">Preview</button>{{/if}}
+  {{#if canPreview}}<button name="preview" value="1" class="secondary">Preview</button>{{/if}}
 </form>
+{{#if previewSrc}}<script src="/static/preview.js"></script>{{/if}}

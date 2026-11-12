@@ -1,32 +1,58 @@
 import express, { Response, Router } from 'express';
+import fs from 'fs';
 import { pipeline } from 'stream/promises';
-import { FileInfo, findFileInfo, recordDownload } from '../files.js';
-import { checkPreviewKey, createPreviewKey, previewOf } from '../preview.js';
 import { PUBLIC_URL } from '../config.js';
+import { FileInfo, findFileInfo, recordDownload } from '../files.js';
+import { verifyPassword } from '../password.js';
+import { checkPreviewKey, createPreviewKey, previewOf } from '../preview.js';
+import { isBlocked, recordFailure } from '../rateLimit.js';
 import { fileSize, readFile, readHead, storedPath, thumbnailPath } from '../storage.js';
 import { ffmpegAvailable, makeThumbnail, videoSize } from '../trim.js';
-import fs from 'fs';
-import { verifyPassword } from '../password.js';
-import { isBlocked, recordFailure } from '../rateLimit.js';
 import { escapeHtml, messagePage, render } from '../views.js';
 
 const router = Router();
 
-const formPage = (info: FileInfo, error?: string, head = ''): string =>
-  render(
+interface PageOptions {
+  error?: string;
+  head?: string; // extra <head> tags (link embeds)
+  previewKey?: string; // proves the password was entered, so a protected file may be previewed
+}
+
+/**
+ * The download page. A file without a password shows its preview right away; a protected one shows it
+ * once the visitor has entered the password and asked for it (previewKey). Heavy parts (video, big
+ * images) only start loading when the visitor interacts with them: see public/preview.js.
+ */
+async function formPage(info: FileInfo, token: string, opts: PageOptions = {}): Promise<string> {
+  const preview = previewOf(info.name);
+  const unlocked = !info.password || !!opts.previewKey;
+  const showPreview = !!preview && unlocked;
+  const query = info.password && opts.previewKey ? `?k=${encodeURIComponent(opts.previewKey)}` : '';
+  const poster =
+    showPreview && preview.kind === 'video' && (await ffmpegAvailable())
+      ? `/d/${token}/thumb/preview.jpg${query}`
+      : undefined;
+
+  return render(
     'download',
     'Download',
     {
-    name: info.name,
-    size: (info.size / 1024 / 1024).toFixed(2),
-    expires: info.expiresAt?.toISOString().replace('T', ' ').slice(0, 16),
-    needsPassword: info.password ? '1' : undefined,
-    previewable: previewOf(info.name) ? '1' : undefined,
-    error,
+      name: info.name,
+      size: (info.size / 1024 / 1024).toFixed(2),
+      expires: info.expiresAt?.toISOString().replace('T', ' ').slice(0, 16),
+      needsPassword: info.password && !opts.previewKey ? '1' : undefined,
+      key: info.password ? opts.previewKey : undefined,
+      canPreview: info.password && preview && !opts.previewKey ? '1' : undefined,
+      previewKind: showPreview ? preview.kind : undefined,
+      previewSrc: showPreview ? `/d/${token}/raw/${encodeURIComponent(info.name)}${query}` : undefined,
+      previewBytes: showPreview ? info.size : undefined,
+      previewPoster: poster,
+      error: opts.error,
     },
-    '',
-    head,
+    showPreview ? 'wide' : '',
+    opts.head,
   );
+}
 
 const notFound = (res: Response) => res.status(404).send(messagePage('Not found'));
 const serverError = (res: Response, e: unknown) => {
@@ -38,7 +64,7 @@ router.get('/d/:token', async (req, res) => {
   try {
     const info = await findFileInfo(req.params.token);
     if (!info) return notFound(res);
-    res.send(formPage(info, undefined, info.password ? '' : await embedTags(req, info)));
+    res.send(await formPage(info, req.params.token, { head: info.password ? '' : await embedTags(req, info) }));
   } catch (e) {
     serverError(res, e);
   }
@@ -46,35 +72,43 @@ router.get('/d/:token', async (req, res) => {
 
 router.post('/d/:token', express.urlencoded({ extended: false, limit: '4kb' }), async (req, res) => {
   const ip = req.ip ?? 'unknown';
+  const token = req.params.token;
   try {
-    const info = await findFileInfo(req.params.token);
+    const info = await findFileInfo(token);
     if (!info) return notFound(res);
+
+    // A key from an earlier correct password (given with the preview) stands in for the password.
+    const key = typeof req.body?.key === 'string' ? req.body.key : '';
+    const hasKey = !!info.password && checkPreviewKey(key, token);
     // Passwordless files still go through this POST (the page has a button), so link previews
     // and crawlers that only fetch the page do not trigger or log a download.
-    if (info.password) {
-      if (isBlocked(ip)) return res.status(429).send(formPage(info, 'Too many attempts. Try later.'));
+    if (info.password && !hasKey) {
+      if (isBlocked(ip)) return res.status(429).send(await formPage(info, token, { error: 'Too many attempts. Try later.' }));
       if (!(await verifyPassword(req.body?.password, info.password.salt, info.password.hash))) {
         recordFailure(ip);
-        return res.status(401).send(formPage(info, 'Wrong password'));
+        return res.status(401).send(await formPage(info, token, { error: 'Wrong password' }));
       }
     }
 
-    const size = await fileSize(req.params.token);
+    const size = await fileSize(token);
     if (size === null) return notFound(res);
-    await recordDownload(req.params.token, ip).catch((e) => console.error('Could not log download:', e));
 
-    // "Preview" button: the password was right, so open the preview page with a short-lived key.
+    // "Preview" button (protected files): the password was right, so show the page again with the preview.
     if (req.body?.preview === '1') {
-      if (!previewOf(info.name)) return res.status(400).send(formPage(info, 'This file cannot be previewed'));
-      return res.redirect(303, `/d/${req.params.token}/preview?k=${createPreviewKey(req.params.token)}`);
+      if (!previewOf(info.name)) return res.status(400).send(await formPage(info, token, { error: 'This file cannot be previewed' }));
+      await recordDownload(token, ip).catch((e) => console.error('Could not log download:', e));
+      return res.send(await formPage(info, token, { previewKey: createPreviewKey(token) }));
     }
+
+    // A download that follows a logged preview is not logged a second time.
+    if (!hasKey) await recordDownload(token, ip).catch((e) => console.error('Could not log download:', e));
     res.set({
       'Content-Type': 'application/octet-stream',
       'Content-Disposition': `attachment; filename*=UTF-8''${encodeURIComponent(info.name)}`,
       'Content-Length': String(size),
     });
     // Streamed from disk, so big files do not sit in memory. A cut-off download just ends the connection.
-    await pipeline(readFile(req.params.token), res).catch(() => res.destroy());
+    await pipeline(readFile(token), res).catch(() => res.destroy());
   } catch (e) {
     serverError(res, e);
   }
@@ -129,26 +163,8 @@ async function embedTags(req: express.Request<{ token: string }>, info: FileInfo
   return tags.join('\n');
 }
 
-// Still image of a video, for link embeds. Only for files without a password; made once, then kept on disk.
-router.get('/d/:token/thumb{/:name}', async (req, res) => {
-  try {
-    const info = await findFileInfo(req.params.token);
-    if (!info || info.password || previewOf(info.name)?.kind !== 'video' || !(await ffmpegAvailable())) {
-      return notFound(res);
-    }
-    const thumb = thumbnailPath(req.params.token);
-    if (!fs.existsSync(thumb)) await makeThumbnail(storedPath(req.params.token), thumb);
-    res.set('Content-Type', 'image/jpeg');
-    res.sendFile(thumb, (err) => {
-      if (err && !res.headersSent) notFound(res);
-    });
-  } catch (e) {
-    serverError(res, e);
-  }
-});
-
-// Preview page and the raw content it loads. They need the key from a correct password,
-// except for files without a password, which anyone with the link may already download.
+// The content shown inline on the download page. Protected files need the key from a correct password;
+// files without a password need nothing, since anyone with the link may already download them.
 async function previewAccess(req: express.Request<{ token: string }>, res: Response) {
   const info = await findFileInfo(req.params.token);
   const preview = info && previewOf(info.name);
@@ -159,19 +175,18 @@ async function previewAccess(req: express.Request<{ token: string }>, res: Respo
   return { info, preview };
 }
 
-router.get('/d/:token/preview', async (req, res) => {
+// Still image of a video: the poster on the page, and the card image of link embeds. Made once, kept on disk.
+router.get('/d/:token/thumb{/:name}', async (req, res) => {
   try {
     const access = await previewAccess(req, res);
     if (!access) return;
-    const key = typeof req.query.k === 'string' ? `?k=${encodeURIComponent(req.query.k)}` : '';
-    res.send(
-      render(
-        'preview',
-        access.info.name,
-        { name: access.info.name, kind: access.preview.kind, src: `/d/${req.params.token}/raw${key}` },
-        'wide',
-      ),
-    );
+    if (access.preview.kind !== 'video' || !(await ffmpegAvailable())) return notFound(res);
+    const thumb = thumbnailPath(req.params.token);
+    if (!fs.existsSync(thumb)) await makeThumbnail(storedPath(req.params.token), thumb);
+    res.set('Content-Type', 'image/jpeg');
+    res.sendFile(thumb, (err) => {
+      if (err && !res.headersSent) notFound(res);
+    });
   } catch (e) {
     serverError(res, e);
   }
