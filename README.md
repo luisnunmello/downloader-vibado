@@ -4,7 +4,7 @@ A small password-protected file sharing site built with Express, TypeScript and 
 
 - **Sign in once** at `/login` with the master password, or with a guest name and password.
 - The **master** gets an admin page to manage every file and the guest uploaders.
-- **Guests** get their own page to upload files and manage the files they uploaded.
+- **Guests** get their own page to manage the files they uploaded. The master can set a maximum file size and a maximum lifetime per guest.
 - **Each upload gets its own download password** and an unguessable link.
 - Uploads can **expire** and be deleted automatically.
 - Files, passwords, sessions and the download history are stored in Postgres.
@@ -13,7 +13,8 @@ A small password-protected file sharing site built with Express, TypeScript and 
 
 **Signing in** (`/login`): leave the name empty and enter the master password, or enter a guest name and that guest's password. You are sent to `/admin` (master) or `/guest` (guest) and stay signed in for 12 hours or until you sign out.
 
-**Uploading:** the upload form is at the top of both the admin and guest pages. Pick a file, choose a password for this download, and optionally a deletion time (10 minutes, 1 hour, 1 day, 7 days, 30 days, or never). You get a link like `https://your-host/d/<48-character random token>`.
+**Uploading** (`/upload`): reached from the "Upload a file" button on the admin and guest pages. Pick a file, choose a password for this download, and choose when it is deleted. You get a link like `https://your-host/d/<48-character random token>`. The page shows your limits and only offers deletion times you are allowed.
+
 
 **Downloading** (`/d/<token>`): anyone with the link and that file's download password can download it under its original name. No sign-in is needed.
 
@@ -21,11 +22,19 @@ A small password-protected file sharing site built with Express, TypeScript and 
 
 | | Master (`/admin`) | Guest (`/guest`) |
 |---|---|---|
-| Upload files | yes | yes |
+| Upload files | yes, no size limit | yes, within their limits |
 | See files | all files | only their own |
 | See a file's download history (time, IP) | yes | own files |
 | Rename, change download password, change expiry, delete | any file | own files |
-| Create guests, reset their passwords, delete them | yes | no |
+| Create guests, reset their passwords, set their limits, delete them | yes | no |
+
+**Limits**
+
+- The master has no file size limit from the app. The only cap is 1000 MB, because a file is stored in a single Postgres `bytea` value (1 GB maximum). Large uploads use a lot of memory: expect about twice the file size in RAM during the transfer.
+- Each guest can have a **max file size** (1-1000 MB). Without one, the server default `MAX_SIZE_MB` applies.
+- Each guest can have a **max expiry** in minutes. When set, the guest's files must expire within that time and "never" is not offered.
+- Limits are enforced on the server. The upload page reads them from `/api/limits` to hide options that would be refused.
+- Changing a limit affects future uploads only. Existing files are left as they are.
 
 Deleting a guest keeps the files they uploaded (they then belong to nobody, so only the master can manage them) and signs that guest out.
 
@@ -72,7 +81,7 @@ On PowerShell, set variables with `$env:NAME="value"` instead of `export`.
 | `DATABASE_URL` | `postgres://postgres:postgres@localhost:5432/downloader` | Postgres connection string |
 | `MASTER_PASSWORD` | none | Seeds the master password on first start |
 | `PORT` | `3000` | HTTP port |
-| `MAX_SIZE_MB` | `100` | Maximum upload size in MB |
+| `MAX_SIZE_MB` | `100` | Default maximum upload size in MB for guests without their own limit (the master is not affected; hard cap 1000) |
 | `TRUST_PROXY` | unset | Set to `1` (or an Express trust-proxy value) when behind a reverse proxy |
 | `DB_PASSWORD` | `downloader` | Postgres password (Docker Compose only) |
 
@@ -92,7 +101,7 @@ On startup the app migrates the database in place:
 
 - The stored upload password becomes the master password.
 - Existing files are marked as uploaded by `master`. Files uploaded by a guest are linked to that guest by name.
-- The `/upload` page is gone; `/upload` redirects to the sign-in page.
+- Uploading moved from the admin and guest pages to its own page, `/upload`.
 - Files uploaded before per-file download passwords existed cannot be downloaded. Re-upload them.
 - Passwords hashed with the old scrypt scheme no longer verify. Run `npm run set-password` and re-upload the affected files.
 
@@ -100,7 +109,8 @@ On startup the app migrates the database in place:
 
 ```sql
 credentials (role TEXT PRIMARY KEY, salt BYTEA, hash BYTEA)          -- only the 'master' role
-guests      (id SERIAL PRIMARY KEY, name TEXT, salt BYTEA, hash BYTEA, created_at TIMESTAMPTZ)
+guests      (id SERIAL PRIMARY KEY, name TEXT, salt BYTEA, hash BYTEA, created_at TIMESTAMPTZ,
+             max_size_mb INT NULL, max_expiry_minutes INT NULL)       -- NULL = default size / no expiry limit
 files       (token TEXT PRIMARY KEY, name TEXT, size BIGINT, data BYTEA, uploader TEXT,
              guest_id INT REFERENCES guests ON DELETE SET NULL,
              pw_salt BYTEA, pw_hash BYTEA, expires_at TIMESTAMPTZ NULL, created_at TIMESTAMPTZ)
@@ -129,19 +139,20 @@ src/db.ts              Postgres pool and migrations
 src/password.ts        PBKDF2 hashing and verification
 src/auth.ts            Master password and sign-in (master or guest)
 src/session.ts         Sessions in Postgres, cookie reading, requireAuth / requireMaster
-src/guests.ts          Guest uploader queries
+src/guests.ts          Guest uploader queries, including their limits
+src/limits.ts          What a signed-in user may upload (size and expiry)
 src/files.ts           File queries: store, serve, expire, list, edit, download log
 src/http.ts            Header and filename helpers
 src/rateLimit.ts       In-memory failed-attempt limiter
 src/views.ts           Tiny HTML template renderer
 src/routes/auth.ts     /login, /api/login, /api/logout
-src/routes/panel.ts    /admin and /guest pages
-src/routes/files.ts    /api/files: upload, list, edit, delete, download history
+src/routes/panel.ts    /admin, /guest and /upload pages
+src/routes/files.ts    /api/files (upload, list, edit, delete, download history) and /api/limits
 src/routes/guests.ts   /api/guests (master only)
 src/routes/download.ts GET and POST /d/:token
 src/set-password.ts    CLI for changing the master password
-views/                 HTML templates (layout, home, login, panel, download, message)
-public/                CSS and page scripts, served at /static
+views/                 HTML templates (layout, home, login, panel, upload, download, message)
+public/                CSS and page scripts (common.js is shared), served at /static
 Dockerfile             Multi-stage Alpine build
 docker-compose.yml     App and Postgres
 ```

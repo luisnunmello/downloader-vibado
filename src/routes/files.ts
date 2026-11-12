@@ -1,5 +1,5 @@
 import express, { Request, Response, Router } from 'express';
-import { MAX_EXPIRY_MINUTES, MAX_SIZE } from '../config.js';
+import { MAX_EXPIRY_MINUTES } from '../config.js';
 import {
   canManage,
   deleteFile,
@@ -12,6 +12,7 @@ import {
 } from '../files.js';
 import { MASTER_LABEL } from '../guests.js';
 import { cleanFilename, headerValue } from '../http.js';
+import { limitsFor } from '../limits.js';
 import { hashPassword } from '../password.js';
 import { currentIdentity, requireAuth } from '../session.js';
 
@@ -40,8 +41,15 @@ async function authorize(res: Response, token: string): Promise<boolean> {
   return false;
 }
 
+const mb = (bytes: number): string => String(Math.floor(bytes / 1024 / 1024));
+
 const router = Router();
-router.use('/api/files', requireAuth);
+router.use(['/api/files', '/api/limits'], requireAuth);
+
+// What the signed-in user may upload, so the upload page can show and enforce it.
+router.get('/api/limits', async (_req, res) => {
+  res.json(await limitsFor(currentIdentity(res)));
+});
 
 router.get('/api/files', async (_req, res) => {
   res.json(await listFiles(currentIdentity(res)));
@@ -50,20 +58,24 @@ router.get('/api/files', async (_req, res) => {
 // Upload: the raw file is the request body; the metadata travels in headers.
 router.put('/api/files', async (req, res) => {
   try {
+    const identity = currentIdentity(res);
+    const limits = await limitsFor(identity);
+
     const downloadPassword = headerValue(req, 'x-download-password');
     if (!isPassword(downloadPassword)) {
       return res.status(400).json({ error: `Download password must be at least ${MIN_PASSWORD} characters` });
     }
     const minutes = Number(req.get('x-expires-minutes') || 0);
     if (!isValidMinutes(minutes)) return res.status(400).json({ error: 'Invalid expiry' });
-    if (Number(req.get('content-length') || 0) > MAX_SIZE) {
-      return res.status(413).json({ error: 'File too large' });
+    if (limits.maxExpiryMinutes !== null && (minutes === 0 || minutes > limits.maxExpiryMinutes)) {
+      return res.status(400).json({ error: `Files must be deleted within ${limits.maxExpiryMinutes} minutes` });
     }
 
-    const data = await readBody(req, MAX_SIZE);
-    if (!data) return res.status(413).json({ error: 'File too large' });
+    const tooLarge = { error: `File too large (maximum ${mb(limits.maxSizeBytes)} MB)` };
+    if (Number(req.get('content-length') || 0) > limits.maxSizeBytes) return res.status(413).json(tooLarge);
+    const data = await readBody(req, limits.maxSizeBytes);
+    if (!data) return res.status(413).json(tooLarge);
 
-    const identity = currentIdentity(res);
     const { salt, hash } = await hashPassword(downloadPassword);
     const { token, expiresAt } = await insertFile({
       name: cleanFilename(headerValue(req, 'x-filename')),

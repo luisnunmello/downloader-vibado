@@ -1,0 +1,17 @@
+<div class="bar">
+  <h1>Upload a file</h1>
+  <a class="btn secondary" href="{{home}}">Back to files</a>
+</div>
+
+<p id="limits" class="meta"></p>
+<form id="uploadForm">
+  <input id="file" type="file" required>
+  <input id="dpw" type="password" placeholder="Password for this download (min 4 characters)" required autocomplete="new-password">
+  <label for="exp">Delete after</label>
+  <select id="exp"></select>
+  <button>Upload</button>
+</form>
+<p id="msg"></p>
+
+<script src="/static/common.js"></script>
+<script src="/static/upload.js"></script>

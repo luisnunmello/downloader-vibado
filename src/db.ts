@@ -58,6 +58,10 @@ export async function migrate(): Promise<void> {
       END IF;
     END $$;
 
+    -- Per-guest limits; NULL means "use the default" (size) or "no limit" (expiry).
+    ALTER TABLE guests ADD COLUMN IF NOT EXISTS max_size_mb INTEGER;
+    ALTER TABLE guests ADD COLUMN IF NOT EXISTS max_expiry_minutes INTEGER;
+
     CREATE TABLE IF NOT EXISTS sessions (
       token_hash TEXT PRIMARY KEY,
       role TEXT NOT NULL CHECK (role IN ('master', 'guest')),

@@ -1,33 +1,3 @@
-const $ = (id) => document.getElementById(id);
-
-// The session lives in an HttpOnly cookie; a 401 means it expired, so go back to the sign-in page.
-async function api(method, path, body) {
-  const headers = body ? { 'content-type': 'application/json' } : {};
-  const res = await fetch('/api' + path, { method, headers, body: body && JSON.stringify(body) });
-  if (res.status === 401) {
-    location.href = '/login';
-    throw new Error('Signed out');
-  }
-  const json = await res.json().catch(() => ({}));
-  if (!res.ok) throw new Error(json.error || 'Request failed');
-  return json;
-}
-
-// Tiny DOM builder. Children are appended as text nodes, so nothing here can inject markup.
-function h(tag, props = {}, ...children) {
-  const el = document.createElement(tag);
-  for (const [key, value] of Object.entries(props)) {
-    if (key === 'class') el.className = value;
-    else if (key.startsWith('on')) el.addEventListener(key.slice(2), value);
-    else el.setAttribute(key, value);
-  }
-  el.append(...children.filter((c) => c != null && c !== false));
-  return el;
-}
-
-const fmtDate = (d) => (d ? new Date(d).toLocaleString() : '-');
-const fmtSize = (bytes) => (bytes / 1024 / 1024).toFixed(2) + ' MB';
-
 async function run(action) {
   $('msg').textContent = '';
   try {
@@ -39,54 +9,14 @@ async function run(action) {
 
 const button = (label, action, cls = '') => h('button', { class: cls, onclick: () => run(action) }, label);
 
+// Empty input = no value; used to clear a limit.
+const numberOrNull = (text) => (text.trim() === '' ? null : Number(text));
+
 // ---------- Sign out ----------
 
 $('logout').addEventListener('click', async () => {
   await fetch('/api/logout', { method: 'POST' });
   location.href = '/login';
-});
-
-// ---------- Upload ----------
-
-function showUploadResult(link, expiresAt) {
-  const url = location.origin + link;
-  const msg = $('uploadMsg');
-  msg.className = 'ok';
-  msg.replaceChildren(
-    'Done. Download link: ',
-    h('br'),
-    h('a', { href: url }, url),
-    expiresAt ? ` (deleted at ${fmtDate(expiresAt)})` : '',
-  );
-}
-
-$('uploadForm').addEventListener('submit', async (e) => {
-  e.preventDefault();
-  const file = $('file').files[0];
-  const msg = $('uploadMsg');
-  msg.className = '';
-  msg.textContent = 'Uploading...';
-  try {
-    // Filename and password are URI-encoded so non-ASCII characters survive in headers.
-    const res = await fetch('/api/files', {
-      method: 'PUT',
-      headers: {
-        'x-download-password': encodeURIComponent($('dpw').value),
-        'x-expires-minutes': $('exp').value,
-        'x-filename': encodeURIComponent(file.name),
-      },
-      body: file,
-    });
-    if (res.status === 401) return (location.href = '/login');
-    const json = await res.json().catch(() => ({}));
-    if (!res.ok) throw new Error(json.error || 'Upload failed');
-    showUploadResult(json.link, json.expiresAt);
-    $('uploadForm').reset();
-    await loadFiles();
-  } catch (err) {
-    msg.className = 'err';
-    msg.textContent = err.message;
-  }
 });
 
 // ---------- Files ----------
@@ -161,14 +91,29 @@ async function loadFiles() {
 // ---------- Guests (master only: these elements exist only on the admin page) ----------
 
 function guestCard(guest) {
+  const size = guest.maxSizeMb === null ? 'default' : `${guest.maxSizeMb} MB`;
+  const expiry = guest.maxExpiryMinutes === null ? 'no limit' : fmtMinutes(guest.maxExpiryMinutes);
+
   return h(
     'div',
     { class: 'card' },
     h('strong', {}, guest.name),
     h('div', { class: 'meta' }, `Created ${fmtDate(guest.createdAt)}`),
+    h('div', { class: 'meta' }, `Max file size: ${size} - Max expiry: ${expiry}`),
     h(
       'div',
       { class: 'actions' },
+      button('Limits', async () => {
+        const sizeAnswer = prompt('Max file size in MB (1-1000). Leave empty for the server default.', guest.maxSizeMb ?? '');
+        if (sizeAnswer === null) return;
+        const expiryAnswer = prompt('Max expiry in minutes. Leave empty for no limit.', guest.maxExpiryMinutes ?? '');
+        if (expiryAnswer === null) return;
+        await api('PATCH', `/guests/${guest.id}`, {
+          maxSizeMb: numberOrNull(sizeAnswer),
+          maxExpiryMinutes: numberOrNull(expiryAnswer),
+        });
+        await loadGuests();
+      }),
       button('Reset password', async () => {
         const password = prompt(`New password for ${guest.name} (min 4 characters)`);
         if (password !== null) await api('PATCH', `/guests/${guest.id}`, { password });
@@ -195,9 +140,13 @@ if ($('guestForm')) {
   $('guestForm').addEventListener('submit', (e) => {
     e.preventDefault();
     run(async () => {
-      await api('POST', '/guests', { name: $('gname').value, password: $('gpw').value });
-      $('gname').value = '';
-      $('gpw').value = '';
+      await api('POST', '/guests', {
+        name: $('gname').value,
+        password: $('gpw').value,
+        maxSizeMb: numberOrNull($('gsize').value),
+        maxExpiryMinutes: numberOrNull($('gexp').value),
+      });
+      $('guestForm').reset();
       await loadGuests();
     });
   });

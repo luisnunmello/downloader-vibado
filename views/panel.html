@@ -1,38 +1,27 @@
 <div class="bar">
   <h1>{{heading}}</h1>
-  <button id="logout" class="secondary">Sign out</button>
+  <div>
+    <a class="btn" href="/upload">Upload a file</a>
+    <button id="logout" class="secondary">Sign out</button>
+  </div>
 </div>
-
-<h2>Upload a file</h2>
-<form id="uploadForm">
-  <input id="file" type="file" required>
-  <input id="dpw" type="password" placeholder="Password for this download (min 4 characters)" required autocomplete="new-password">
-  <label for="exp">Delete after</label>
-  <select id="exp">
-    <option value="0">Never (permanent)</option>
-    <option value="10">10 minutes</option>
-    <option value="60">1 hour</option>
-    <option value="1440">1 day</option>
-    <option value="10080">7 days</option>
-    <option value="43200">30 days</option>
-  </select>
-  <button>Upload</button>
-</form>
-<p id="uploadMsg"></p>
 
 <h2>Files</h2>
 <div id="files"></div>
 
 {{#if admin}}
 <h2>Guest uploaders</h2>
-<p class="meta">Guests sign in with their name and password, can upload, and can see and manage their own files only.</p>
+<p class="meta">Guests sign in with their name and password, can upload, and can see and manage their own files only. Leave a limit empty for the default (size) or no limit (expiry). When a guest has a max expiry, their files cannot be permanent.</p>
 <form id="guestForm" class="row">
   <input id="gname" type="text" placeholder="Guest name" maxlength="50" required autocomplete="off">
   <input id="gpw" type="password" placeholder="Guest password (min 4 characters)" required autocomplete="new-password">
+  <input id="gsize" type="number" min="1" max="1000" step="1" placeholder="Max file size (MB)">
+  <input id="gexp" type="number" min="1" step="1" placeholder="Max expiry (minutes)">
   <button>Create guest</button>
 </form>
 <div id="guests"></div>
 {{/if}}
 
 <p id="msg" class="err"></p>
+<script src="/static/common.js"></script>
 <script src="/static/panel.js"></script>

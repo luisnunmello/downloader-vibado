@@ -21,9 +21,6 @@ router.get('/login', async (req, res) => {
   res.send(render('login', 'Sign in'));
 });
 
-// Old bookmark: uploading now happens inside the admin and guest pages.
-router.get('/upload', (_req, res) => res.redirect('/login'));
-
 router.post('/api/login', express.json({ limit: '4kb' }), async (req, res) => {
   const ip = req.ip ?? 'unknown';
   if (isBlocked(ip)) return res.status(429).json({ error: 'Too many attempts. Try later.' });
