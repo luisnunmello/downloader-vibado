@@ -1,0 +1,8 @@
+<h1>Download</h1>
+<p>{{name}} ({{size}} MB)</p>
+{{#if expires}}<p>Available until {{expires}} UTC</p>{{/if}}
+{{#if error}}<p class="err">{{error}}</p>{{/if}}
+<form method="post">
+  <input name="password" type="password" placeholder="Download password" required autofocus>
+  <button>Download</button>
+</form>

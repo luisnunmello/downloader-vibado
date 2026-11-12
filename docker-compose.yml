@@ -1,0 +1,31 @@
+services:
+  app:
+    build: .
+    ports:
+      - "${PORT:-3000}:3000"
+    environment:
+      DATABASE_URL: postgres://downloader:${DB_PASSWORD:-downloader}@db:5432/downloader
+      MASTER_PASSWORD: ${MASTER_PASSWORD:?set MASTER_PASSWORD in .env}
+      MAX_SIZE_MB: ${MAX_SIZE_MB:-100}
+    depends_on:
+      db:
+        condition: service_healthy
+    restart: unless-stopped
+
+  db:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_USER: downloader
+      POSTGRES_PASSWORD: ${DB_PASSWORD:-downloader}
+      POSTGRES_DB: downloader
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U downloader"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    restart: unless-stopped
+
+volumes:
+  pgdata:

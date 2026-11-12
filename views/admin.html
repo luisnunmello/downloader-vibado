@@ -1,0 +1,26 @@
+<section id="login">
+  <h1>Admin</h1>
+  <form id="loginForm">
+    <input id="pw" type="password" placeholder="Master password" autofocus>
+    <button>Sign in</button>
+  </form>
+  <p id="loginMsg" class="err"></p>
+</section>
+
+<section id="panel" hidden>
+  <h1>Files</h1>
+  <div id="files"></div>
+
+  <h1>Guest uploaders</h1>
+  <p class="meta">Guests can upload files from the upload page with their name and password. They cannot see or change anything else.</p>
+  <form id="guestForm" class="row">
+    <input id="gname" type="text" placeholder="Guest name" maxlength="50" required autocomplete="off">
+    <input id="gpw" type="password" placeholder="Guest password (min 4 characters)" required autocomplete="new-password">
+    <button>Create guest</button>
+  </form>
+  <div id="guests"></div>
+
+  <p id="msg" class="err"></p>
+</section>
+
+<script src="/static/admin.js"></script>
