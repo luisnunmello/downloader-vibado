@@ -3,6 +3,7 @@ import { MAX_SIZE } from './config.js';
 import { storageUsed } from './files.js';
 import { getGuestLimits } from './guests.js';
 import { getServerMaxMb } from './settings.js';
+import { reservedBytes, slotKey } from './video.js';
 
 const MB = 1024 * 1024;
 
@@ -15,7 +16,7 @@ export interface Limits {
   maxExpiryMinutes: number | null;
   /** Total storage the user may use across all their files, in bytes. null = no limit. */
   maxTotalBytes: number | null;
-  /** Storage they use now (only filled in when there is a quota). */
+  /** Storage they use now, including their temporary video (only filled in when there is a quota). */
   usedBytes: number | null;
 }
 
@@ -31,6 +32,20 @@ export async function limitsFor(identity: Identity): Promise<Limits> {
     sizeLimited: true,
     maxExpiryMinutes: limits?.maxExpiryMinutes ?? null,
     maxTotalBytes,
-    usedBytes: maxTotalBytes === null ? null : await storageUsed(identity.guestId),
+    usedBytes: maxTotalBytes === null ? null : (await storageUsed(identity.guestId)) + reservedBytes(slotKey(identity)),
+  };
+}
+
+const mb = (bytes: number): string => String(Math.floor(bytes / 1024 / 1024));
+
+/** How big an upload may be (the per-file limit, or what is left of the storage quota), and the message if it is too big. */
+export function uploadBound(limits: Limits): { maxBytes: number; message: string } {
+  const free = limits.maxTotalBytes === null ? Infinity : Math.max(0, limits.maxTotalBytes - (limits.usedBytes ?? 0));
+  return {
+    maxBytes: Math.min(limits.maxSizeBytes, free),
+    message:
+      free < limits.maxSizeBytes
+        ? `Not enough storage left (${mb(free)} MB free of ${mb(limits.maxTotalBytes ?? 0)} MB)`
+        : `File too large (maximum ${mb(limits.maxSizeBytes)} MB)`,
   };
 }

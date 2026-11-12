@@ -76,6 +76,9 @@ export async function migrate(): Promise<void> {
       value TEXT NOT NULL
     );
 
+    -- A display title, separate from the file name (whose extension says what kind of file it is).
+    ALTER TABLE files ADD COLUMN IF NOT EXISTS title TEXT;
+
     -- File contents live on disk now. Databases from older versions still have files.data and
     -- file_chunks until moveLegacyFilesToDisk (src/legacy.ts) moves them and drops both; until then
     -- new rows must be allowed to have no data.

@@ -7,6 +7,9 @@
 <form id="uploadForm">
   <input id="file" type="file" required>
   <div id="preview" class="preview" hidden></div>
+  <button id="previewBtn" type="button" class="secondary" hidden>Preview the result</button>
+  <div id="result" class="review"></div>
+  <input id="title" type="text" placeholder="Title (optional, shown on the download page)" maxlength="200" autocomplete="off">
   <input id="dpw" type="password" placeholder="Password for this download" required autocomplete="new-password">
   <label class="check"><input id="nopw" type="checkbox"> No password: anyone with the link can download</label>
   <label for="exp">Delete after</label>
@@ -16,7 +19,6 @@
   <button id="cancel" type="button" class="secondary" hidden>Cancel upload</button>
 </form>
 <p id="msg"></p>
-<div id="review"></div>
 
 <script src="/static/common.js"></script>
 <script src="/static/video-edit.js"></script>

@@ -8,33 +8,48 @@ import { DATA_DIR } from './config.js';
 // so they are always safe to use as file names. Uploads are written to "<token>.part" first.
 const DIR = path.join(DATA_DIR, 'files');
 const finalPath = (token: string): string => path.join(DIR, token);
-/** Absolute path of an upload still being received. */
-export const partialPath = (token: string): string => path.resolve(partPath(token));
+const partPath = (token: string): string => path.join(DIR, `${token}.part`);
 /** Absolute path of a stored file (for res.sendFile). */
 export const storedPath = (token: string): string => path.resolve(finalPath(token));
-const partPath = (token: string): string => path.join(DIR, `${token}.part`);
 
-/** Creates the storage folder and removes half-written uploads left by a crash. */
+// Each user has at most one temporary video (an upload being edited, or the preview of an edit): see video.ts.
+// Its files live here, named after the user ("master" or "g<id>"), and never survive a restart.
+const PREVIEW_DIR = path.join(DATA_DIR, 'preview');
+export const previewSourcePath = (key: string): string => path.resolve(PREVIEW_DIR, `${key}.src`);
+export const previewResultPath = (key: string): string => path.resolve(PREVIEW_DIR, `${key}.out`);
+
+/** Creates the storage folders and removes half-written uploads and temporary videos left by a crash. */
 export async function initStorage(): Promise<void> {
   await mkdir(DIR, { recursive: true });
+  await mkdir(PREVIEW_DIR, { recursive: true });
   for (const name of await readdir(DIR)) {
-    if (name.endsWith('.part') || name.endsWith('.draft')) await rm(path.join(DIR, name), { force: true });
+    if (name.endsWith('.part')) await rm(path.join(DIR, name), { force: true });
   }
+  for (const name of await readdir(PREVIEW_DIR)) await rm(path.join(PREVIEW_DIR, name), { force: true });
 }
 
 /**
- * Writes the stream to a temporary file. Returns its size, or null (leaving nothing behind) if it
- * grows past `maxBytes`. Follow up with commitFile, or discardFile to drop it.
+ * Writes the stream to `target`. Returns its size, or null (leaving nothing behind) if it grows past
+ * `maxBytes`. The file is removed again if anything goes wrong.
  */
-export async function saveStream(token: string, source: AsyncIterable<Buffer>, maxBytes: number): Promise<number | null> {
-  const out = fs.createWriteStream(partPath(token), { flags: 'wx' });
+export async function saveStreamTo(target: string, source: AsyncIterable<Buffer>, maxBytes: number): Promise<number | null> {
+  const out = fs.createWriteStream(target, { flags: 'wx' });
   out.on('error', () => {}); // failures surface through the awaits below
+  const drop = async () => {
+    if (!out.closed) {
+      await new Promise<void>((resolve) => {
+        out.once('close', () => resolve());
+        out.destroy();
+      });
+    }
+    await rm(target, { force: true, maxRetries: 3 });
+  };
   let total = 0;
   try {
     for await (const chunk of source) {
       total += chunk.length;
       if (total > maxBytes) {
-        await discardFile(token, out);
+        await drop();
         return null;
       }
       if (!out.write(chunk)) await once(out, 'drain');
@@ -43,30 +58,33 @@ export async function saveStream(token: string, source: AsyncIterable<Buffer>, m
     await once(out, 'finish');
     return total;
   } catch (e) {
-    await discardFile(token, out);
+    await drop();
     throw e;
   }
 }
 
-/** Makes a saved upload the real file. */
+/** Receives an upload into "<token>.part". Follow up with commitFile, or discardFile to drop it. */
+export const saveStream = (token: string, source: AsyncIterable<Buffer>, maxBytes: number): Promise<number | null> =>
+  saveStreamTo(partPath(token), source, maxBytes);
+
+/** Makes a received upload the real file. */
 export async function commitFile(token: string): Promise<void> {
   await rename(partPath(token), finalPath(token));
 }
 
+/** Makes an existing file (a finished temporary video) the real file, moving it without copying. */
+export async function adoptFile(token: string, from: string): Promise<void> {
+  await rename(from, finalPath(token));
+}
+
+/** Replaces the stored file with another one, moving it without copying. */
+export const replaceStored = adoptFile;
+
 /** Removes a temporary or committed file, if there is one. */
-export async function discardFile(token: string, openStream?: fs.WriteStream): Promise<void> {
-  if (openStream && !openStream.closed) {
-    await new Promise<void>((resolve) => {
-      openStream.once('close', () => resolve());
-      openStream.destroy();
-    });
-  }
+export async function discardFile(token: string): Promise<void> {
   await rm(partPath(token), { force: true, maxRetries: 3 });
   await rm(finalPath(token), { force: true, maxRetries: 3 });
 }
-
-/** Absolute path of an edited video (cut/compressed) the owner has not accepted yet. */
-export const draftPath = (token: string): string => path.resolve(`${finalPath(token)}.draft`);
 
 /** Absolute path of a video's cached thumbnail (made on demand for link embeds). */
 export const thumbnailPath = (token: string): string => path.resolve(`${finalPath(token)}.jpg`);
@@ -79,7 +97,6 @@ export async function removeFiles(tokens: string[]): Promise<void> {
   for (const token of tokens) {
     await rm(finalPath(token), { force: true, maxRetries: 3 }).catch((e) => console.error('Could not remove file:', e));
     await removeThumbnail(token);
-    await rm(draftPath(token), { force: true }).catch(() => {});
   }
 }
 

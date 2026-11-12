@@ -6,12 +6,14 @@ import { deleteExpiredFiles } from './files.js';
 import { moveLegacyFilesToDisk } from './legacy.js';
 import { initStorage } from './storage.js';
 import { deleteExpiredSessions } from './session.js';
+import { expireTemps } from './video.js';
 
 async function cleanup(): Promise<void> {
   try {
     const n = await deleteExpiredFiles();
     if (n) console.log(`Deleted ${n} expired file(s).`);
     await deleteExpiredSessions();
+    await expireTemps(6 * 60 * 60 * 1000); // temporary videos nobody came back for
   } catch (e) {
     console.error('Cleanup failed:', e);
   }

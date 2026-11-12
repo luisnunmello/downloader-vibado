@@ -85,19 +85,43 @@ async function toggleDownloads(token, box) {
 let canEditVideo = false;
 let videoPresets = [];
 
-// Editor for a stored video: cut and/or compress, look at the result, then keep it or not.
+// Editor for a stored video: cut and/or compress, look at the preview, then keep it or not. Keeping it
+// replaces the video; the preview is the user's one temporary video, so it counts against their storage.
 function videoBox(file, box) {
   const video = h('video', { src: `/api/files/${file.token}/raw`, preload: 'metadata' });
   video.controls = true;
-  const options = videoOptions(video, file.size, videoPresets);
-  const review = h('div');
+  const review = h('div', { class: 'review' });
+  const options = videoOptions(video, file.size, videoPresets, () => {
+    // Other options: the preview no longer matches them.
+    if (review.hasChildNodes()) {
+      review.replaceChildren();
+      api('DELETE', '/video-preview').catch(() => {});
+    }
+  });
   box.replaceChildren(
     video,
     options.el,
-    button('Make the result and preview it', async () => {
+    button('Make the preview', async () => {
       const request = options.read();
       if (!request) throw new Error('Set a start or end time, or pick a lower quality, first');
-      review.replaceChildren(videoReview(file.token, request, () => loadFiles()));
+      await api('POST', `/files/${file.token}/video-preview`, request);
+      watchTemp(review, (job) => {
+        review.replaceChildren(
+          ...tempResult(job),
+          h(
+            'div',
+            { class: 'row' },
+            button('Keep this version', async () => {
+              await api('POST', '/video-preview/keep');
+              await loadFiles();
+            }),
+            button('Keep the original', async () => {
+              await api('DELETE', '/video-preview');
+              review.replaceChildren(h('div', { class: 'meta' }, 'Discarded. The video is unchanged.'));
+            }, 'secondary'),
+          ),
+        );
+      });
     }),
     review,
   );
@@ -119,7 +143,8 @@ function fileCard(file) {
   return h(
     'div',
     { class: 'card' },
-    h('strong', {}, file.name),
+    h('strong', {}, file.title),
+    file.title !== file.name && h('div', { class: 'meta' }, `File: ${file.name}`),
     h('div', { class: 'meta' }, `Uploaded by ${file.uploader} on ${fmtDate(file.createdAt)} - ${fmtSize(file.size)}`),
     h('div', { class: 'meta' }, 'Expires: ' + (file.expiresAt ? fmtDate(file.expiresAt) + (expired ? ' (expired)' : '') : 'never')),
     h('div', { class: 'meta' }, 'Download: ' + (file.passwordless ? 'no password, anyone with the link' : 'password protected')),
@@ -128,9 +153,9 @@ function fileCard(file) {
       'div',
       { class: 'actions' },
       button(`Downloads (${file.downloads})`, () => toggleDownloads(file.token, log)),
-      button('Rename', async () => {
-        const name = prompt('New file name', file.name);
-        if (name !== null) await edit({ name });
+      button('Edit title', async () => {
+        const title = prompt('Title (empty = use the file name)', file.title === file.name ? '' : file.title);
+        if (title !== null) await edit({ title });
       }),
       button(file.passwordless ? 'Set password' : 'Change password', async () => {
         const downloadPassword = prompt('New download password');

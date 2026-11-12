@@ -1,7 +1,7 @@
 import crypto from 'crypto';
 import { Identity } from './auth.js';
 import { pool } from './db.js';
-import { commitFile, discardFile, removeFiles, removeThumbnail, saveStream } from './storage.js';
+import { adoptFile, commitFile, discardFile, removeFiles, removeThumbnail, saveStream } from './storage.js';
 
 /** Salted hash of a download password. */
 export interface PasswordHash {
@@ -10,7 +10,8 @@ export interface PasswordHash {
 }
 
 export interface FileInfo {
-  name: string;
+  name: string; // the file's name, with its extension
+  title: string; // what is shown: the title if there is one, else the name
   size: number;
   expiresAt: Date | null;
   password: PasswordHash | null; // null = anyone with the link may download
@@ -18,8 +19,11 @@ export interface FileInfo {
 
 export interface NewFile {
   name: string;
-  source: AsyncIterable<Buffer>; // the file contents, streamed to disk
-  maxBytes: number; // refuse (and store nothing) if the contents are larger
+  title: string | null; // optional display title
+  // The contents: either streamed in, or a finished file on disk that is moved into place.
+  source?: AsyncIterable<Buffer>;
+  fromPath?: { path: string; size: number };
+  maxBytes: number; // refuse (and store nothing) if streamed contents are larger
   password: PasswordHash | null; // null = no download password
   expiresInMinutes: number; // 0 = never
   uploader: string; // display label
@@ -29,6 +33,7 @@ export interface NewFile {
 export interface FileSummary {
   token: string;
   name: string;
+  title: string;
   size: number;
   uploader: string;
   createdAt: Date;
@@ -43,7 +48,7 @@ export interface DownloadRecord {
 }
 
 export interface FileChanges {
-  name?: string;
+  title?: string | null; // null = back to showing the file name
   password?: PasswordHash | null; // null removes the password
   expiresInMinutes?: number; // counted from now; 0 = never
 }
@@ -71,10 +76,16 @@ export async function storageUsed(guestId: number): Promise<number> {
  * `maxBytes`, or would take the guest over `maxTotalBytes`.
  * The guest's row is locked briefly so simultaneous uploads cannot slip past the quota.
  */
-export async function insertFile(file: NewFile, maxTotalBytes: number | null): Promise<StoreResult> {
+export async function insertFile(file: NewFile, maxTotalBytes: number | null, reservedBytes = 0): Promise<StoreResult> {
   const token = crypto.randomBytes(24).toString('base64url');
-  const size = await saveStream(token, file.source, file.maxBytes);
-  if (size === null) return { ok: false, reason: 'too-large' };
+  let size: number;
+  if (file.fromPath) {
+    size = file.fromPath.size;
+  } else {
+    const saved = await saveStream(token, file.source!, file.maxBytes);
+    if (saved === null) return { ok: false, reason: 'too-large' };
+    size = saved;
+  }
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
@@ -84,15 +95,16 @@ export async function insertFile(file: NewFile, maxTotalBytes: number | null): P
         `SELECT coalesce(sum(size), 0) AS used FROM files WHERE guest_id = $1 AND ${LIVE}`,
         [file.guestId],
       );
-      if (Number(used[0].used) + size > maxTotalBytes) {
+      // reservedBytes: the user's temporary video, which also takes up their space
+      if (Number(used[0].used) + reservedBytes + size > maxTotalBytes) {
         await client.query('ROLLBACK');
         await discardFile(token);
         return { ok: false, reason: 'quota' };
       }
     }
     const { rows } = await client.query<{ expires_at: Date | null }>(
-      `INSERT INTO files (token, name, size, pw_salt, pw_hash, no_password, uploader, guest_id, expires_at)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8,
+      `INSERT INTO files (token, name, title, size, pw_salt, pw_hash, no_password, uploader, guest_id, expires_at)
+       VALUES ($1, $2, $10, $3, $4, $5, $6, $7, $8,
                CASE WHEN $9::int > 0 THEN now() + $9::int * interval '1 minute' END)
        RETURNING expires_at`,
       [
@@ -105,9 +117,11 @@ export async function insertFile(file: NewFile, maxTotalBytes: number | null): P
         file.uploader,
         file.guestId,
         file.expiresInMinutes,
+        file.title,
       ],
     );
-    await commitFile(token);
+    if (file.fromPath) await adoptFile(token, file.fromPath.path);
+    else await commitFile(token);
     await client.query('COMMIT');
     return { ok: true, token, expiresAt: rows[0].expires_at };
   } catch (e) {
@@ -127,12 +141,13 @@ export async function findFileInfo(token: string): Promise<FileInfo | null> {
   if (!isToken(token)) return null;
   const { rows } = await pool.query<{
     name: string;
+    title: string | null;
     size: string;
     expires_at: Date | null;
     pw_salt: Buffer | null;
     pw_hash: Buffer | null;
   }>(
-    `SELECT name, size, expires_at, pw_salt, pw_hash FROM files
+    `SELECT name, title, size, expires_at, pw_salt, pw_hash FROM files
      WHERE token = $1 AND (no_password OR pw_hash IS NOT NULL) AND ${LIVE}`,
     [token],
   );
@@ -140,7 +155,7 @@ export async function findFileInfo(token: string): Promise<FileInfo | null> {
   if (!r) return null;
   // A stored hash always wins, so a stray flag can never make a protected file public.
   const password = r.pw_salt && r.pw_hash ? { salt: r.pw_salt, hash: r.pw_hash } : null;
-  return { name: r.name, size: Number(r.size), expiresAt: r.expires_at, password };
+  return { name: r.name, title: r.title || r.name, size: Number(r.size), expiresAt: r.expires_at, password };
 }
 
 export async function fileName(token: string): Promise<string | null> {
@@ -182,6 +197,7 @@ export async function listFiles(identity: Identity): Promise<FileSummary[]> {
   const { rows } = await pool.query<{
     token: string;
     name: string;
+    title: string | null;
     size: string;
     uploader: string;
     created_at: Date;
@@ -189,7 +205,7 @@ export async function listFiles(identity: Identity): Promise<FileSummary[]> {
     downloads: string;
     no_password: boolean;
   }>(
-    `SELECT f.token, f.name, f.size, f.uploader, f.created_at, f.expires_at, f.no_password,
+    `SELECT f.token, f.name, f.title, f.size, f.uploader, f.created_at, f.expires_at, f.no_password,
             (SELECT count(*) FROM downloads d WHERE d.token = f.token) AS downloads
      FROM files f
      WHERE $1::int IS NULL OR f.guest_id = $1
@@ -199,6 +215,7 @@ export async function listFiles(identity: Identity): Promise<FileSummary[]> {
   return rows.map((r) => ({
     token: r.token,
     name: r.name,
+    title: r.title || r.name,
     size: Number(r.size),
     uploader: r.uploader,
     createdAt: r.created_at,
@@ -221,7 +238,7 @@ export async function updateFile(token: string, changes: FileChanges): Promise<b
   const sets: string[] = [];
   const param = (value: unknown): string => `$${params.push(value)}`;
 
-  if (changes.name !== undefined) sets.push(`name = ${param(changes.name)}`);
+  if (changes.title !== undefined) sets.push(`title = ${param(changes.title)}`);
   if (changes.password === null) {
     sets.push('pw_salt = NULL', 'pw_hash = NULL', 'no_password = true');
   } else if (changes.password) {

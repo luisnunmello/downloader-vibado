@@ -37,7 +37,7 @@ async function formPage(info: FileInfo, token: string, opts: PageOptions = {}): 
     'download',
     'Download',
     {
-      name: info.name,
+      name: info.title, // shown; the file name decides the type and the download name
       size: (info.size / 1024 / 1024).toFixed(2),
       expires: info.expiresAt?.toISOString().replace('T', ' ').slice(0, 16),
       needsPassword: info.password && !opts.previewKey ? '1' : undefined,
@@ -137,7 +137,7 @@ async function embedTags(req: express.Request<{ token: string }>, info: FileInfo
     meta('og:site_name', 'File sharing'),
     meta('og:type', preview?.kind === 'video' ? 'video.other' : 'website'),
     meta('og:url', base),
-    meta('og:title', info.name),
+    meta('og:title', info.title),
     meta('og:description', description),
   ];
   if (preview?.kind === 'image') {

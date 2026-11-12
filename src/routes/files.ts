@@ -13,12 +13,12 @@ import {
 } from '../files.js';
 import { MASTER_LABEL } from '../guests.js';
 import { cleanFilename, headerValue } from '../http.js';
-import { limitsFor } from '../limits.js';
+import { Limits, limitsFor, uploadBound } from '../limits.js';
 import { hashPassword } from '../password.js';
 import { previewOf } from '../preview.js';
 import { storedPath } from '../storage.js';
 import { ffmpegAvailable } from '../trim.js';
-import { PRESETS } from '../video.js';
+import { PRESETS, reservedBytes, slotKey } from '../video.js';
 import { currentIdentity, requireAuth } from '../session.js';
 
 // No minimum length, but an empty password is not a password: use "no password" for open downloads.
@@ -33,7 +33,29 @@ export async function authorize(res: Response, token: string): Promise<boolean> 
   return false;
 }
 
-const mb = (bytes: number): string => String(Math.floor(bytes / 1024 / 1024));
+const MAX_TITLE = 200;
+/** A title from user input: trimmed, null when empty. Returns false if it is too long. */
+export const cleanTitle = (v: unknown): string | null | false => {
+  if (typeof v !== 'string' || !v.trim()) return null;
+  return v.trim().length > MAX_TITLE ? false : v.trim();
+};
+
+export interface UploadMeta {
+  noPassword: boolean;
+  downloadPassword: unknown;
+  minutes: number; // 0 = never
+}
+
+/** Checks the password choice and the expiry against the user's limits. Returns a message, or null if fine. */
+export function checkUploadMeta(meta: UploadMeta, limits: Limits): string | null {
+  // Either a download password, or an explicit "no password" choice.
+  if (!meta.noPassword && !isPassword(meta.downloadPassword)) return 'Enter a download password, or choose "No password"';
+  if (!isValidMinutes(meta.minutes)) return 'Invalid expiry';
+  if (limits.maxExpiryMinutes !== null && (meta.minutes === 0 || meta.minutes > limits.maxExpiryMinutes)) {
+    return `Files must be deleted within ${limits.maxExpiryMinutes} minutes`;
+  }
+  return null;
+}
 
 const router = Router();
 router.use(['/api/files', '/api/limits'], requireAuth);
@@ -53,46 +75,38 @@ router.put('/api/files', async (req, res) => {
     const identity = currentIdentity(res);
     const limits = await limitsFor(identity);
 
-    // Either a download password, or an explicit "no password" choice.
     const noPassword = req.get('x-no-password') === '1';
     const downloadPassword = headerValue(req, 'x-download-password');
-    if (!noPassword && !isPassword(downloadPassword)) {
-      return res.status(400).json({ error: 'Enter a download password, or choose "No password"' });
-    }
     const minutes = Number(req.get('x-expires-minutes') || 0);
-    if (!isValidMinutes(minutes)) return res.status(400).json({ error: 'Invalid expiry' });
-    if (limits.maxExpiryMinutes !== null && (minutes === 0 || minutes > limits.maxExpiryMinutes)) {
-      return res.status(400).json({ error: `Files must be deleted within ${limits.maxExpiryMinutes} minutes` });
-    }
+    const problem = checkUploadMeta({ noPassword, downloadPassword, minutes }, limits);
+    if (problem) return res.status(400).json({ error: problem });
+    const title = cleanTitle(headerValue(req, 'x-title'));
+    if (title === false) return res.status(400).json({ error: `The title can be at most ${MAX_TITLE} characters` });
 
     // The largest this upload may be: the per-file limit, or what is left of the guest's storage quota.
-    const free =
-      limits.maxTotalBytes === null ? Infinity : Math.max(0, limits.maxTotalBytes - (limits.usedBytes ?? 0));
-    const maxBytes = Math.min(limits.maxSizeBytes, free);
-    const tooLarge = () =>
-      free < limits.maxSizeBytes
-        ? { error: `Not enough storage left (${mb(free)} MB free of ${mb(limits.maxTotalBytes ?? 0)} MB)` }
-        : { error: `File too large (maximum ${mb(limits.maxSizeBytes)} MB)` };
-    if (Number(req.get('content-length') || 0) > maxBytes) return res.status(413).json(tooLarge());
+    const bound = uploadBound(limits);
+    if (Number(req.get('content-length') || 0) > bound.maxBytes) return res.status(413).json({ error: bound.message });
 
     const stored = await insertFile(
       {
         name: cleanFilename(headerValue(req, 'x-filename')),
-        source: req, // streamed into the database, never held in memory whole
-        maxBytes,
-        password: noPassword ? null : await hashPassword(downloadPassword),
+        title,
+        source: req, // streamed to disk, never held in memory whole
+        maxBytes: bound.maxBytes,
+        password: noPassword ? null : await hashPassword(downloadPassword as string),
         expiresInMinutes: minutes,
         uploader: identity.role === 'master' ? MASTER_LABEL : identity.name,
         guestId: identity.role === 'guest' ? identity.guestId : null,
       },
       limits.maxTotalBytes,
+      reservedBytes(slotKey(identity)),
     );
     // Both limits are checked again while storing: the real size is only known then, and the quota
     // can change while the upload is in flight.
     if (!stored.ok) {
       return stored.reason === 'quota'
         ? res.status(413).json({ error: 'Not enough storage left. Delete a file or ask for more space.' })
-        : res.status(413).json(tooLarge());
+        : res.status(413).json({ error: bound.message });
     }
     res.json({ link: `/d/${stored.token}`, expiresAt: stored.expiresAt });
   } catch (e) {
@@ -112,9 +126,12 @@ router.patch('/api/files/:token', express.json({ limit: '4kb' }), async (req, re
 
   const body = req.body ?? {};
   const changes: FileChanges = {};
-  if (body.name !== undefined) {
-    if (typeof body.name !== 'string' || !body.name.trim()) return res.status(400).json({ error: 'Invalid name' });
-    changes.name = cleanFilename(body.name.trim());
+  if (body.title !== undefined) {
+    // The title is only what is shown. The file name (and its extension) never changes, so previews,
+    // embeds and video editing keep working whatever the title is.
+    const title = cleanTitle(body.title);
+    if (title === false) return res.status(400).json({ error: `The title can be at most ${MAX_TITLE} characters` });
+    changes.title = title;
   }
   if (body.downloadPassword !== undefined) {
     // null removes the password, so anyone with the link can download

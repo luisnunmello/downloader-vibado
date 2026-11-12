@@ -61,8 +61,12 @@ const PREVIEW_TEXT = /\.(txt|md|log|csv|tsv|json|xml|ya?ml|ini|conf|toml|m?js|ts
 const PREVIEW_TEXT_LIMIT = 256 * 1024;
 let previewUrl = null;
 let videoUi = null; // cut / quality fields, for a chosen video
+let tempExists = false; // the server holds a temporary video of this user (being made, or ready)
+let tempReady = false; // ...and it is finished, so Upload will use it
 
 async function showPreview() {
+  await discardTemp(); // a preview made for another file or other options no longer applies
+  $('previewBtn').hidden = true;
   const box = $('preview');
   if (previewUrl) URL.revokeObjectURL(previewUrl);
   previewUrl = null;
@@ -81,8 +85,9 @@ async function showPreview() {
     video.controls = true;
     box.append(video);
     if (limits?.canEditVideo) {
-      videoUi = videoOptions(video, file.size, limits.videoPresets);
+      videoUi = videoOptions(video, file.size, limits.videoPresets, discardTemp);
       box.append(videoUi.el);
+      $('previewBtn').hidden = false;
     }
   } else if (PREVIEW_TEXT.test(file.name)) {
     const text = await file.slice(0, PREVIEW_TEXT_LIMIT).text();
@@ -98,11 +103,11 @@ $('file').addEventListener('change', () => showPreview().catch(() => {}));
 let currentUpload = null; // the request in flight, so it can be cancelled
 
 // Sends the file as the raw request body and shows progress while it goes up.
-function sendFile(file, headers) {
+function sendFile(url, file, headers, label) {
   return new Promise((resolve, reject) => {
     const xhr = new XMLHttpRequest();
     currentUpload = xhr;
-    xhr.open('PUT', '/api/files');
+    xhr.open('PUT', url);
     for (const [name, value] of Object.entries(headers)) xhr.setRequestHeader(name, value);
     xhr.upload.onprogress = (e) => {
       if (!e.lengthComputable) return;
@@ -111,7 +116,7 @@ function sendFile(file, headers) {
       $('msg').textContent =
         e.loaded === e.total
           ? 'Finishing...'
-          : `Uploading... ${percent}% (${fmtSize(e.loaded)} of ${fmtSize(e.total)})`;
+          : `${label}... ${percent}% (${fmtSize(e.loaded)} of ${fmtSize(e.total)})`;
     };
     xhr.onload = () => {
       let json = {};
@@ -120,69 +125,185 @@ function sendFile(file, headers) {
       } catch {}
       resolve({ status: xhr.status, json });
     };
-    xhr.onabort = () => reject(new Error('Upload cancelled'));
+    xhr.onabort = () => reject(new Error('Cancelled'));
     xhr.onerror = () => reject(new Error('Upload failed (connection lost)'));
     xhr.send(file);
   });
 }
 
+// Shows progress and the Cancel button while a file is going up.
+function busy(on) {
+  $('go').disabled = on;
+  $('previewBtn').disabled = on;
+  $('bar').hidden = !on;
+  $('cancel').hidden = !on;
+  if (on) $('bar').value = 0;
+  else currentUpload = null;
+}
+
+// Throws away the temporary video on the server, when what it was made from changes.
+async function discardTemp() {
+  if (!tempExists) return;
+  tempExists = false;
+  tempReady = false;
+  $('result').replaceChildren();
+  await api('DELETE', '/video-preview').catch(() => {});
+  await refreshLimits();
+}
+
+// Checks the file against what the user may store, like an upload would.
+function fitsLimits(file) {
+  if (limits.maxTotalBytes !== null && file.size > limits.maxTotalBytes - limits.usedBytes) {
+    showError(`Not enough storage left (${fmtSize(Math.max(0, limits.maxTotalBytes - limits.usedBytes))} free)`);
+    return false;
+  }
+  if (file.size > limits.maxSizeBytes) {
+    showError(`File too large (maximum ${Math.floor(limits.maxSizeBytes / 1024 / 1024)} MB)`);
+    return false;
+  }
+  return true;
+}
+
+// "Preview the result": the video goes to a temporary file on the server, is cut and compressed there,
+// and the result is shown. Upload then uses that result instead of sending the file again.
+$('previewBtn').addEventListener('click', async () => {
+  const file = $('file').files[0];
+  if (!file || !limits) return;
+  let request;
+  try {
+    request = videoUi.read();
+  } catch (err) {
+    return showError(err.message);
+  }
+  if (!request) return showError('Set a start or end time, or pick a lower quality, first.');
+  await discardTemp();
+  await refreshLimits(); // the old preview's space is free again
+  if (!fitsLimits(file)) return;
+
+  $('msg').className = '';
+  $('msg').textContent = 'Sending the video... 0%';
+  busy(true);
+  tempExists = true;
+  try {
+    const { status, json } = await sendFile(
+      '/api/video-preview',
+      file,
+      {
+        'x-filename': encodeURIComponent(file.name),
+        'x-start': request.start ?? '',
+        'x-end': request.end ?? '',
+        'x-preset': request.preset,
+        'x-target-mb': request.targetMb ?? '',
+      },
+      'Sending the video',
+    );
+    if (status === 401) return (location.href = '/login');
+    if (status < 200 || status >= 300) throw new Error(json.error || 'Could not make the preview');
+    $('msg').textContent = '';
+    watchTemp(
+      $('result'),
+      (job) => {
+        tempReady = true;
+        $('result').replaceChildren(
+          ...tempResult(job),
+          h('div', { class: 'meta' }, 'Happy with it? Fill in the details below and press Upload to publish this version.'),
+        );
+        refreshLimits();
+      },
+      () => {
+        tempExists = false;
+        refreshLimits();
+      },
+    );
+    await refreshLimits();
+  } catch (err) {
+    tempExists = false;
+    showError(err.message);
+  } finally {
+    busy(false);
+  }
+});
+
 $('uploadForm').addEventListener('submit', async (e) => {
   e.preventDefault();
   const file = $('file').files[0];
   if (!limits) return showError('Still loading your limits, try again in a moment.');
-  if (limits.maxTotalBytes !== null && file.size > limits.maxTotalBytes - limits.usedBytes) {
-    return showError(`Not enough storage left (${fmtSize(Math.max(0, limits.maxTotalBytes - limits.usedBytes))} free)`);
-  }
-  if (file.size > limits.maxSizeBytes) {
-    return showError(`File too large (maximum ${Math.floor(limits.maxSizeBytes / 1024 / 1024)} MB)`);
-  }
 
-  // Optional: cut and/or compress a video. It is uploaded as it is, then edited on the server.
-  let request = null;
+  // A finished preview is what gets uploaded: nothing is sent again.
+  if (tempReady) return publishPreview();
+  if (tempExists) return showError('The preview is still being made. Wait for it to finish, or change the options to start over.');
+
+  // Cut / quality options are only applied through a preview, so what is uploaded is what was shown.
   if (videoUi) {
+    let request;
     try {
       request = videoUi.read();
     } catch (err) {
       return showError(err.message);
     }
+    if (request) {
+      return showError('You set cut or quality options: press "Preview the result" first, or clear them to upload the video as it is.');
+    }
   }
-  $('review').replaceChildren();
+  if (!fitsLimits(file)) return;
 
   $('msg').className = '';
   $('msg').textContent = 'Uploading... 0%';
-  $('go').disabled = true;
-  $('bar').value = 0;
-  $('bar').hidden = false;
-  $('cancel').hidden = false;
+  busy(true);
   try {
     // XMLHttpRequest, because fetch cannot report upload progress.
-    // Filename and password are URI-encoded so non-ASCII characters survive in headers.
-    const { status, json } = await sendFile(file, {
-      'x-download-password': encodeURIComponent($('dpw').value),
-      'x-no-password': $('nopw').checked ? '1' : '0',
-      'x-expires-minutes': $('exp').value,
-      'x-filename': encodeURIComponent(file.name),
-    });
+    // Filename, title and password are URI-encoded so non-ASCII characters survive in headers.
+    const { status, json } = await sendFile(
+      '/api/files',
+      file,
+      {
+        'x-download-password': encodeURIComponent($('dpw').value),
+        'x-no-password': $('nopw').checked ? '1' : '0',
+        'x-expires-minutes': $('exp').value,
+        'x-filename': encodeURIComponent(file.name),
+        'x-title': encodeURIComponent($('title').value),
+      },
+      'Uploading',
+    );
     if (status === 401) return (location.href = '/login');
     if (status < 200 || status >= 300) throw new Error(json.error || 'Upload failed');
-    showResult(json.link, json.expiresAt);
-    // The video was uploaded as it is; now make the cut/compressed version and let the user look at it.
-    if (request) {
-      $('review').replaceChildren(videoReview(json.link.split('/').pop(), request, refreshLimits));
-    }
-    $('uploadForm').reset();
-    syncPasswordField();
-    showPreview();
-    await refreshLimits();
+    finished(json);
+  } catch (err) {
+    showError(err.message);
+  } finally {
+    busy(false);
+  }
+});
+
+// Publishes the finished temporary video as the upload.
+async function publishPreview() {
+  $('go').disabled = true;
+  try {
+    const json = await api('POST', '/video-preview/publish', {
+      title: $('title').value,
+      downloadPassword: $('dpw').value,
+      noPassword: $('nopw').checked,
+      expiresInMinutes: Number($('exp').value),
+    });
+    tempExists = false;
+    tempReady = false;
+    finished(json);
   } catch (err) {
     showError(err.message);
   } finally {
     $('go').disabled = false;
-    $('bar').hidden = true;
-    $('cancel').hidden = true;
-    currentUpload = null;
   }
-});
+}
+
+// After an upload: show the link and clear the form.
+function finished(json) {
+  showResult(json.link, json.expiresAt);
+  $('uploadForm').reset();
+  syncPasswordField();
+  $('result').replaceChildren();
+  showPreview();
+  refreshLimits();
+}
 
 // The server throws away the partly received file when the connection closes.
 $('cancel').addEventListener('click', () => currentUpload?.abort());
