@@ -12,6 +12,53 @@ const button = (label, action, cls = '') => h('button', { class: cls, onclick: (
 // Empty input = no value; used to clear a limit.
 const numberOrNull = (text) => (text.trim() === '' ? null : Number(text));
 
+// Max-expiry input: a list of common choices, or a custom amount with a unit.
+const EXPIRY_PRESETS = [10, 60, 1440, 10080, 43200]; // minutes
+
+function expiryPicker(current) {
+  const select = h(
+    'select',
+    {},
+    h('option', { value: 'none' }, 'No expiry limit'),
+    ...EXPIRY_PRESETS.map((m) => h('option', { value: String(m) }, fmtMinutes(m))),
+    h('option', { value: 'custom' }, 'Custom...'),
+  );
+  const amount = h('input', { type: 'number', min: '1', step: 'any', placeholder: 'Amount' });
+  const unit = h(
+    'select',
+    {},
+    h('option', { value: '1' }, 'minutes'),
+    h('option', { value: '60' }, 'hours'),
+    h('option', { value: '1440' }, 'days'),
+  );
+  const custom = h('span', { class: 'picker' }, amount, unit);
+  const sync = () => (custom.hidden = select.value !== 'custom');
+  select.addEventListener('change', sync);
+
+  if (current === null) {
+    select.value = 'none';
+  } else if (EXPIRY_PRESETS.includes(current)) {
+    select.value = String(current);
+  } else {
+    select.value = 'custom';
+    unit.value = current % 1440 === 0 ? '1440' : current % 60 === 0 ? '60' : '1';
+    amount.value = String(current / Number(unit.value));
+  }
+  sync();
+
+  return {
+    el: h('span', { class: 'picker' }, select, custom),
+    /** Minutes, or null for no limit. Throws if the custom value is not a whole number of minutes. */
+    value() {
+      if (select.value === 'none') return null;
+      if (select.value !== 'custom') return Number(select.value);
+      const minutes = Number(amount.value) * Number(unit.value);
+      if (!Number.isInteger(minutes) || minutes < 1) throw new Error('Enter a valid custom expiry');
+      return minutes;
+    },
+  };
+}
+
 // ---------- Sign out ----------
 
 $('logout').addEventListener('click', async () => {
@@ -94,6 +141,30 @@ function guestCard(guest) {
   const size = guest.maxSizeMb === null ? 'default' : `${guest.maxSizeMb} MB`;
   const expiry = guest.maxExpiryMinutes === null ? 'no limit' : fmtMinutes(guest.maxExpiryMinutes);
 
+  const sizeInput = h('input', {
+    type: 'number',
+    min: '1',
+    max: '1000',
+    step: '1',
+    placeholder: 'Max file size (MB, empty = default)',
+    value: guest.maxSizeMb ?? '',
+  });
+  const picker = expiryPicker(guest.maxExpiryMinutes);
+  const editor = h(
+    'div',
+    { class: 'editor row' },
+    sizeInput,
+    h('div', { class: 'field' }, h('span', { class: 'meta' }, 'Max expiry'), picker.el),
+    button('Save', async () => {
+      await api('PATCH', `/guests/${guest.id}`, {
+        maxSizeMb: numberOrNull(sizeInput.value),
+        maxExpiryMinutes: picker.value(),
+      });
+      await loadGuests();
+    }),
+  );
+  editor.hidden = true;
+
   return h(
     'div',
     { class: 'card' },
@@ -103,17 +174,7 @@ function guestCard(guest) {
     h(
       'div',
       { class: 'actions' },
-      button('Limits', async () => {
-        const sizeAnswer = prompt('Max file size in MB (1-1000). Leave empty for the server default.', guest.maxSizeMb ?? '');
-        if (sizeAnswer === null) return;
-        const expiryAnswer = prompt('Max expiry in minutes. Leave empty for no limit.', guest.maxExpiryMinutes ?? '');
-        if (expiryAnswer === null) return;
-        await api('PATCH', `/guests/${guest.id}`, {
-          maxSizeMb: numberOrNull(sizeAnswer),
-          maxExpiryMinutes: numberOrNull(expiryAnswer),
-        });
-        await loadGuests();
-      }),
+      button('Limits', async () => (editor.hidden = !editor.hidden)),
       button('Reset password', async () => {
         const password = prompt(`New password for ${guest.name} (min 4 characters)`);
         if (password !== null) await api('PATCH', `/guests/${guest.id}`, { password });
@@ -128,6 +189,7 @@ function guestCard(guest) {
         'danger',
       ),
     ),
+    editor,
   );
 }
 
@@ -137,6 +199,9 @@ async function loadGuests() {
 }
 
 if ($('guestForm')) {
+  let createPicker = expiryPicker(null);
+  $('gexpBox').append(createPicker.el);
+
   $('guestForm').addEventListener('submit', (e) => {
     e.preventDefault();
     run(async () => {
@@ -144,9 +209,12 @@ if ($('guestForm')) {
         name: $('gname').value,
         password: $('gpw').value,
         maxSizeMb: numberOrNull($('gsize').value),
-        maxExpiryMinutes: numberOrNull($('gexp').value),
+        maxExpiryMinutes: createPicker.value(),
       });
       $('guestForm').reset();
+      // reset() restores the picker's selects, but its custom fields must re-hide too.
+      createPicker = expiryPicker(null);
+      $('gexpBox').replaceChildren(createPicker.el);
       await loadGuests();
     });
   });

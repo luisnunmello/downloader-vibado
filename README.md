@@ -32,7 +32,7 @@ A small password-protected file sharing site built with Express, TypeScript and 
 
 - The master has no file size limit from the app. The only cap is 1000 MB, because a file is stored in a single Postgres `bytea` value (1 GB maximum). Large uploads use a lot of memory: expect about twice the file size in RAM during the transfer.
 - Each guest can have a **max file size** (1-1000 MB). Without one, the server default `MAX_SIZE_MB` applies.
-- Each guest can have a **max expiry** in minutes. When set, the guest's files must expire within that time and "never" is not offered.
+- Each guest can have a **max expiry**, picked from common choices (10 minutes to 30 days) or a custom amount in minutes, hours or days. When set, the guest's files must expire within that time and "never" is not offered.
 - Limits are enforced on the server. The upload page reads them from `/api/limits` to hide options that would be refused.
 - Changing a limit affects future uploads only. Existing files are left as they are.
 

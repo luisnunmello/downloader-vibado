@@ -16,7 +16,10 @@
   <input id="gname" type="text" placeholder="Guest name" maxlength="50" required autocomplete="off">
   <input id="gpw" type="password" placeholder="Guest password (min 4 characters)" required autocomplete="new-password">
   <input id="gsize" type="number" min="1" max="1000" step="1" placeholder="Max file size (MB)">
-  <input id="gexp" type="number" min="1" step="1" placeholder="Max expiry (minutes)">
+  <div class="field">
+    <span class="meta">Max expiry</span>
+    <span id="gexpBox"></span>
+  </div>
   <button>Create guest</button>
 </form>
 <div id="guests"></div>

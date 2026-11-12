@@ -115,6 +115,32 @@ button.secondary,
 .row input {
   flex: 1 1 180px;
 }
+.field {
+  display: flex;
+  flex-direction: column;
+  flex: 1 1 220px;
+}
+.picker {
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.picker select,
+.row .picker input {
+  width: auto;
+  flex: 0 1 auto;
+}
+.row .picker input {
+  width: 110px;
+}
+.editor {
+  margin-top: 8px;
+  padding-top: 8px;
+  border-top: 1px solid #e5e7eb;
+}
+.editor button {
+  align-self: flex-end;
+}
 .row button {
   flex: 0 0 auto;
   width: auto;
