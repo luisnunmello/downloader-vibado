@@ -91,6 +91,7 @@ router.put('/api/files', async (req, res) => {
     }
     res.json({ link: `/d/${stored.token}`, expiresAt: stored.expiresAt });
   } catch (e) {
+    if (req.destroyed) return; // the client cancelled or lost connection; nothing was stored
     console.error(e);
     if (!res.headersSent) res.status(500).json({ error: 'Server error' });
   }

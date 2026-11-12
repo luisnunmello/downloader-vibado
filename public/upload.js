@@ -50,10 +50,13 @@ function showError(message) {
   $('msg').textContent = message;
 }
 
+let currentUpload = null; // the request in flight, so it can be cancelled
+
 // Sends the file as the raw request body and shows progress while it goes up.
 function sendFile(file, headers) {
   return new Promise((resolve, reject) => {
     const xhr = new XMLHttpRequest();
+    currentUpload = xhr;
     xhr.open('PUT', '/api/files');
     for (const [name, value] of Object.entries(headers)) xhr.setRequestHeader(name, value);
     xhr.upload.onprogress = (e) => {
@@ -72,6 +75,7 @@ function sendFile(file, headers) {
       } catch {}
       resolve({ status: xhr.status, json });
     };
+    xhr.onabort = () => reject(new Error('Upload cancelled'));
     xhr.onerror = () => reject(new Error('Upload failed (connection lost)'));
     xhr.send(file);
   });
@@ -93,6 +97,7 @@ $('uploadForm').addEventListener('submit', async (e) => {
   $('go').disabled = true;
   $('bar').value = 0;
   $('bar').hidden = false;
+  $('cancel').hidden = false;
   try {
     // XMLHttpRequest, because fetch cannot report upload progress.
     // Filename and password are URI-encoded so non-ASCII characters survive in headers.
@@ -115,8 +120,13 @@ $('uploadForm').addEventListener('submit', async (e) => {
   } finally {
     $('go').disabled = false;
     $('bar').hidden = true;
+    $('cancel').hidden = true;
+    currentUpload = null;
   }
 });
+
+// The server throws away the partly received file when the connection closes.
+$('cancel').addEventListener('click', () => currentUpload?.abort());
 
 api('GET', '/limits')
   .then((result) => {
