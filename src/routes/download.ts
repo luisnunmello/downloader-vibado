@@ -2,7 +2,8 @@ import express, { Response, Router } from 'express';
 import { pipeline } from 'stream/promises';
 import { FileInfo, findFileInfo, recordDownload } from '../files.js';
 import { checkPreviewKey, createPreviewKey, previewOf } from '../preview.js';
-import { fileSize, readFile, storedPath } from '../storage.js';
+import { fileSize, readFile, readHead, storedPath } from '../storage.js';
+import { videoSize } from '../trim.js';
 import { verifyPassword } from '../password.js';
 import { isBlocked, recordFailure } from '../rateLimit.js';
 import { escapeHtml, messagePage, render } from '../views.js';
@@ -35,7 +36,7 @@ router.get('/d/:token', async (req, res) => {
   try {
     const info = await findFileInfo(req.params.token);
     if (!info) return notFound(res);
-    res.send(formPage(info, undefined, info.password ? '' : embedTags(req, info)));
+    res.send(formPage(info, undefined, info.password ? '' : await embedTags(req, info)));
   } catch (e) {
     serverError(res, e);
   }
@@ -79,23 +80,43 @@ router.post('/d/:token', express.urlencoded({ extended: false, limit: '4kb' }), 
 
 // Link previews (WhatsApp, Discord, ...): crawlers only GET the page, so this is for files without a password,
 // which anyone with the link can see anyway. Protected files get no embed, not even their name.
-function embedTags(req: express.Request<{ token: string }>, info: FileInfo): string {
-  const base = `${req.protocol}://${req.get('host')}/d/${req.params.token}`;
+async function embedTags(req: express.Request<{ token: string }>, info: FileInfo): Promise<string> {
+  const token = req.params.token;
+  const base = `${req.protocol}://${req.get('host')}/d/${token}`;
+  // The file name in the URL helps apps that guess the type from the extension.
+  const rawUrl = `${base}/raw/${encodeURIComponent(info.name)}`;
   const preview = previewOf(info.name);
   const meta = (property: string, content: string) =>
     `  <meta property="${property}" content="${escapeHtml(content)}">`;
+  const sizeText = `${(info.size / 1024 / 1024).toFixed(2)} MB`;
+
+  let description = `${sizeText} - open the link to download`;
+  if (preview?.kind === 'text') {
+    // The first lines of the file, so the card shows what is inside.
+    const head = (await readHead(token, 600).catch(() => Buffer.alloc(0))).toString('utf8').replace(/\s+/g, ' ').trim();
+    if (head) description = head.length > 200 ? `${head.slice(0, 200)}...` : head;
+  }
+
   const tags = [
     meta('og:site_name', 'File sharing'),
-    meta('og:type', 'website'),
+    meta('og:type', preview?.kind === 'video' ? 'video.other' : 'website'),
     meta('og:url', base),
     meta('og:title', info.name),
-    meta('og:description', `${(info.size / 1024 / 1024).toFixed(2)} MB - open the link to download`),
+    meta('og:description', description),
   ];
   if (preview?.kind === 'image') {
-    tags.push(meta('og:image', `${base}/raw`), meta('og:image:type', preview.contentType));
+    tags.push(meta('og:image', rawUrl), meta('og:image:secure_url', rawUrl), meta('og:image:type', preview.contentType));
     tags.push('  <meta name="twitter:card" content="summary_large_image">');
   } else if (preview?.kind === 'video') {
-    tags.push(meta('og:video', `${base}/raw`), meta('og:video:type', preview.contentType));
+    const { width, height } = await videoSize(token, storedPath(token));
+    tags.push(
+      meta('og:video', rawUrl),
+      meta('og:video:url', rawUrl),
+      meta('og:video:secure_url', rawUrl),
+      meta('og:video:type', preview.contentType),
+      meta('og:video:width', String(width)),
+      meta('og:video:height', String(height)),
+    );
   }
   return tags.join('\n');
 }
@@ -130,7 +151,7 @@ router.get('/d/:token/preview', async (req, res) => {
   }
 });
 
-router.get('/d/:token/raw', async (req, res) => {
+router.get('/d/:token/raw{/:name}', async (req, res) => {
   try {
     const access = await previewAccess(req, res);
     if (!access) return;

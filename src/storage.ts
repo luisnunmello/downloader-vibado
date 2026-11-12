@@ -1,5 +1,5 @@
 import fs from 'fs';
-import { mkdir, readdir, rename, rm, stat } from 'fs/promises';
+import { mkdir, open, readdir, rename, rm, stat } from 'fs/promises';
 import { once } from 'events';
 import path from 'path';
 import { DATA_DIR } from './config.js';
@@ -77,6 +77,18 @@ export async function fileSize(token: string): Promise<number | null> {
     return (await stat(finalPath(token))).size;
   } catch {
     return null;
+  }
+}
+
+/** The first `bytes` bytes of a stored file (for text snippets in link embeds). */
+export async function readHead(token: string, bytes: number): Promise<Buffer> {
+  const handle = await open(finalPath(token), 'r');
+  try {
+    const buffer = Buffer.alloc(bytes);
+    const { bytesRead } = await handle.read(buffer, 0, bytes, 0);
+    return buffer.subarray(0, bytesRead);
+  } finally {
+    await handle.close();
   }
 }
 

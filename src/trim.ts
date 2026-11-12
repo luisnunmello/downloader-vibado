@@ -12,6 +12,33 @@ export const ffmpegAvailable = (): Promise<boolean> =>
     probe.on('exit', (code) => resolve(code === 0));
   }));
 
+const sizes = new Map<string, { width: number; height: number }>();
+
+/** Width and height of a video (link embeds want them), or a 16:9 guess if ffprobe cannot tell. */
+export async function videoSize(key: string, file: string): Promise<{ width: number; height: number }> {
+  const known = sizes.get(key);
+  if (known) return known;
+  const guess = { width: 1280, height: 720 };
+  const found = await new Promise<{ width: number; height: number } | null>((resolve) => {
+    const proc = spawn(
+      'ffprobe',
+      ['-v', 'error', '-select_streams', 'v:0', '-show_entries', 'stream=width,height', '-of', 'csv=p=0', file],
+      { stdio: ['ignore', 'pipe', 'ignore'] },
+    );
+    let out = '';
+    proc.stdout.on('data', (d) => (out += d));
+    proc.on('error', () => resolve(null));
+    proc.on('exit', () => {
+      const [width, height] = out.trim().split(',').map(Number);
+      resolve(width > 0 && height > 0 ? { width, height } : null);
+    });
+  });
+  const result = found ?? guess;
+  if (sizes.size > 500) sizes.clear();
+  sizes.set(key, result);
+  return result;
+}
+
 export class TrimError extends Error {}
 
 export interface Cut {

@@ -10,6 +10,7 @@ A small password-protected file sharing site built with Express, TypeScript and 
 - Files are stored on disk (`DATA_DIR`); Postgres holds the passwords, sessions, file details and the download history.
 - **Previews:** images, videos and text files can be previewed in the browser before uploading (nothing is sent) and, after entering the password, before downloading. HTML and SVG are never shown inline, so a shared file cannot run scripts. Previews count in the download history.
 - **Link embeds:** for downloads without a password, WhatsApp, Discord and similar apps show a card with the file name and size, and show images and videos inline. Protected downloads show nothing about the file. Behind a reverse proxy, set `TRUST_PROXY` so the embedded links use `https` and your real host name.
+- **Embeds** also include the first lines of text files, and the size of videos, so apps show them as inline players.
 - **Cutting videos:** when you choose a video (mp4, webm, ogv) on the upload page you can set a start and end time, and only that part is stored. On an existing video, the "Cut video" button in the file list does the same and replaces the original with the clip. Cuts use ffmpeg without re-encoding: fast and lossless, but the start snaps to the nearest earlier keyframe. The Docker image includes ffmpeg; without it on the server, the cut options are hidden.
 
 ## How it works
