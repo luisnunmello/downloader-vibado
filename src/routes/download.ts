@@ -5,19 +5,25 @@ import { checkPreviewKey, createPreviewKey, previewOf } from '../preview.js';
 import { fileSize, readFile, storedPath } from '../storage.js';
 import { verifyPassword } from '../password.js';
 import { isBlocked, recordFailure } from '../rateLimit.js';
-import { messagePage, render } from '../views.js';
+import { escapeHtml, messagePage, render } from '../views.js';
 
 const router = Router();
 
-const formPage = (info: FileInfo, error?: string): string =>
-  render('download', 'Download', {
+const formPage = (info: FileInfo, error?: string, head = ''): string =>
+  render(
+    'download',
+    'Download',
+    {
     name: info.name,
     size: (info.size / 1024 / 1024).toFixed(2),
     expires: info.expiresAt?.toISOString().replace('T', ' ').slice(0, 16),
     needsPassword: info.password ? '1' : undefined,
     previewable: previewOf(info.name) ? '1' : undefined,
     error,
-  });
+    },
+    '',
+    head,
+  );
 
 const notFound = (res: Response) => res.status(404).send(messagePage('Not found'));
 const serverError = (res: Response, e: unknown) => {
@@ -29,7 +35,7 @@ router.get('/d/:token', async (req, res) => {
   try {
     const info = await findFileInfo(req.params.token);
     if (!info) return notFound(res);
-    res.send(formPage(info));
+    res.send(formPage(info, undefined, info.password ? '' : embedTags(req, info)));
   } catch (e) {
     serverError(res, e);
   }
@@ -71,11 +77,35 @@ router.post('/d/:token', express.urlencoded({ extended: false, limit: '4kb' }), 
   }
 });
 
-// Preview page and the raw content it loads. Both need the key from a correct password.
+// Link previews (WhatsApp, Discord, ...): crawlers only GET the page, so this is for files without a password,
+// which anyone with the link can see anyway. Protected files get no embed, not even their name.
+function embedTags(req: express.Request<{ token: string }>, info: FileInfo): string {
+  const base = `${req.protocol}://${req.get('host')}/d/${req.params.token}`;
+  const preview = previewOf(info.name);
+  const meta = (property: string, content: string) =>
+    `  <meta property="${property}" content="${escapeHtml(content)}">`;
+  const tags = [
+    meta('og:site_name', 'File sharing'),
+    meta('og:type', 'website'),
+    meta('og:url', base),
+    meta('og:title', info.name),
+    meta('og:description', `${(info.size / 1024 / 1024).toFixed(2)} MB - open the link to download`),
+  ];
+  if (preview?.kind === 'image') {
+    tags.push(meta('og:image', `${base}/raw`), meta('og:image:type', preview.contentType));
+    tags.push('  <meta name="twitter:card" content="summary_large_image">');
+  } else if (preview?.kind === 'video') {
+    tags.push(meta('og:video', `${base}/raw`), meta('og:video:type', preview.contentType));
+  }
+  return tags.join('\n');
+}
+
+// Preview page and the raw content it loads. They need the key from a correct password,
+// except for files without a password, which anyone with the link may already download.
 async function previewAccess(req: express.Request<{ token: string }>, res: Response) {
   const info = await findFileInfo(req.params.token);
   const preview = info && previewOf(info.name);
-  if (!info || !preview || !checkPreviewKey(req.query.k, req.params.token)) {
+  if (!info || !preview || (info.password && !checkPreviewKey(req.query.k, req.params.token))) {
     notFound(res);
     return null;
   }
@@ -86,12 +116,12 @@ router.get('/d/:token/preview', async (req, res) => {
   try {
     const access = await previewAccess(req, res);
     if (!access) return;
-    const key = encodeURIComponent(String(req.query.k));
+    const key = typeof req.query.k === 'string' ? `?k=${encodeURIComponent(req.query.k)}` : '';
     res.send(
       render(
         'preview',
         access.info.name,
-        { name: access.info.name, kind: access.preview.kind, src: `/d/${req.params.token}/raw?k=${key}` },
+        { name: access.info.name, kind: access.preview.kind, src: `/d/${req.params.token}/raw${key}` },
         'wide',
       ),
     );

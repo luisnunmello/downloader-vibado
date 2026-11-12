@@ -9,6 +9,7 @@ A small password-protected file sharing site built with Express, TypeScript and 
 - Uploads can **expire** and be deleted automatically.
 - Files are stored on disk (`DATA_DIR`); Postgres holds the passwords, sessions, file details and the download history.
 - **Previews:** images, videos and text files can be previewed in the browser before uploading (nothing is sent) and, after entering the password, before downloading. HTML and SVG are never shown inline, so a shared file cannot run scripts. Previews count in the download history.
+- **Link embeds:** for downloads without a password, WhatsApp, Discord and similar apps show a card with the file name and size, and show images and videos inline. Protected downloads show nothing about the file. Behind a reverse proxy, set `TRUST_PROXY` so the embedded links use `https` and your real host name.
 
 ## How it works
 

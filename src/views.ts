@@ -15,7 +15,7 @@ function load(name: string): string {
   return tpl;
 }
 
-const escapeHtml = (s: string): string =>
+export const escapeHtml = (s: string): string =>
   s.replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]!);
 
 /**
@@ -34,9 +34,12 @@ function interpolate(tpl: string, vars: Vars): string {
     });
 }
 
-/** Renders views/<view>.html inside views/layout.html. `pageClass` is a CSS class for the page container. */
-export function render(view: string, title: string, vars: Vars = {}, pageClass = ''): string {
-  return interpolate(load('layout'), { title, pageClass, body: interpolate(load(view), vars) });
+/**
+ * Renders views/<view>.html inside views/layout.html. `pageClass` is a CSS class for the page container;
+ * `head` is trusted HTML added to <head> (the caller must escape anything user-supplied in it).
+ */
+export function render(view: string, title: string, vars: Vars = {}, pageClass = '', head = ''): string {
+  return interpolate(load('layout'), { title, pageClass, head, body: interpolate(load(view), vars) });
 }
 
 export const messagePage = (heading: string): string => render('message', heading, { heading });
