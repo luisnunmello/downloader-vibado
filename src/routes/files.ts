@@ -61,9 +61,17 @@ router.put('/api/files', async (req, res) => {
     const identity = currentIdentity(res);
     const limits = await limitsFor(identity);
 
+    // Either a download password, or an explicit "no password" choice.
+    const noPassword = req.get('x-no-password') === '1';
     const downloadPassword = headerValue(req, 'x-download-password');
-    if (!isPassword(downloadPassword)) {
+    if (!noPassword && !isPassword(downloadPassword)) {
       return res.status(400).json({ error: `Download password must be at least ${MIN_PASSWORD} characters` });
+    }
+    const fileLimitReached = {
+      error: `File limit reached (${limits.maxFiles} files). Delete a file before uploading another.`,
+    };
+    if (limits.maxFiles !== null && (limits.filesUsed ?? 0) >= limits.maxFiles) {
+      return res.status(409).json(fileLimitReached);
     }
     const minutes = Number(req.get('x-expires-minutes') || 0);
     if (!isValidMinutes(minutes)) return res.status(400).json({ error: 'Invalid expiry' });
@@ -76,16 +84,20 @@ router.put('/api/files', async (req, res) => {
     const data = await readBody(req, limits.maxSizeBytes);
     if (!data) return res.status(413).json(tooLarge);
 
-    const { salt, hash } = await hashPassword(downloadPassword);
-    const { token, expiresAt } = await insertFile({
-      name: cleanFilename(headerValue(req, 'x-filename')),
-      data,
-      salt,
-      hash,
-      expiresInMinutes: minutes,
-      uploader: identity.role === 'master' ? MASTER_LABEL : identity.name,
-      guestId: identity.role === 'guest' ? identity.guestId : null,
-    });
+    const stored = await insertFile(
+      {
+        name: cleanFilename(headerValue(req, 'x-filename')),
+        data,
+        password: noPassword ? null : await hashPassword(downloadPassword),
+        expiresInMinutes: minutes,
+        uploader: identity.role === 'master' ? MASTER_LABEL : identity.name,
+        guestId: identity.role === 'guest' ? identity.guestId : null,
+      },
+      limits.maxFiles,
+    );
+    // Checked again inside the insert, in case other uploads finished while this one was in flight.
+    if (!stored) return res.status(409).json(fileLimitReached);
+    const { token, expiresAt } = stored;
     res.json({ link: `/d/${token}`, expiresAt });
   } catch (e) {
     console.error(e);
@@ -108,10 +120,14 @@ router.patch('/api/files/:token', express.json({ limit: '4kb' }), async (req, re
     changes.name = cleanFilename(body.name.trim());
   }
   if (body.downloadPassword !== undefined) {
-    if (!isPassword(body.downloadPassword)) {
+    // null removes the password, so anyone with the link can download
+    if (body.downloadPassword === null) {
+      changes.password = null;
+    } else if (isPassword(body.downloadPassword)) {
+      changes.password = await hashPassword(body.downloadPassword);
+    } else {
       return res.status(400).json({ error: `Download password must be at least ${MIN_PASSWORD} characters` });
     }
-    changes.password = await hashPassword(body.downloadPassword);
   }
   if (body.expiresInMinutes !== undefined) {
     if (!isValidMinutes(body.expiresInMinutes)) return res.status(400).json({ error: 'Invalid expiry' });

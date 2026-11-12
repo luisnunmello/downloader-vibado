@@ -62,6 +62,12 @@ export async function migrate(): Promise<void> {
     ALTER TABLE guests ADD COLUMN IF NOT EXISTS max_size_mb INTEGER;
     ALTER TABLE guests ADD COLUMN IF NOT EXISTS max_expiry_minutes INTEGER;
 
+    ALTER TABLE guests ADD COLUMN IF NOT EXISTS max_files INTEGER; -- NULL = no limit
+
+    -- Explicit flag for downloads without a password. Rows with no hash and no flag (files from before
+    -- per-file passwords) stay unavailable instead of becoming public.
+    ALTER TABLE files ADD COLUMN IF NOT EXISTS no_password BOOLEAN NOT NULL DEFAULT false;
+
     CREATE TABLE IF NOT EXISTS sessions (
       token_hash TEXT PRIMARY KEY,
       role TEXT NOT NULL CHECK (role IN ('master', 'guest')),

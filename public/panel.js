@@ -99,6 +99,7 @@ function fileCard(file) {
     h('strong', {}, file.name),
     h('div', { class: 'meta' }, `Uploaded by ${file.uploader} on ${fmtDate(file.createdAt)} - ${fmtSize(file.size)}`),
     h('div', { class: 'meta' }, 'Expires: ' + (file.expiresAt ? fmtDate(file.expiresAt) + (expired ? ' (expired)' : '') : 'never')),
+    h('div', { class: 'meta' }, 'Download: ' + (file.passwordless ? 'no password, anyone with the link' : 'password protected')),
     h('div', { class: 'meta' }, h('a', { href: link }, link)),
     h(
       'div',
@@ -108,10 +109,15 @@ function fileCard(file) {
         const name = prompt('New file name', file.name);
         if (name !== null) await edit({ name });
       }),
-      button('Download password', async () => {
+      button(file.passwordless ? 'Set password' : 'Change password', async () => {
         const downloadPassword = prompt('New download password (min 4 characters)');
         if (downloadPassword !== null) await edit({ downloadPassword });
       }),
+      !file.passwordless &&
+        button('Remove password', async () => {
+          if (!confirm(`Remove the password from "${file.name}"? Anyone with the link will be able to download it.`)) return;
+          await edit({ downloadPassword: null });
+        }),
       button('Expiry', async () => {
         const answer = prompt('Delete after how many minutes from now? (0 = never)', '60');
         if (answer !== null && answer.trim() !== '') await edit({ expiresInMinutes: Number(answer) });
@@ -140,6 +146,7 @@ async function loadFiles() {
 function guestCard(guest) {
   const size = guest.maxSizeMb === null ? 'default' : `${guest.maxSizeMb} MB`;
   const expiry = guest.maxExpiryMinutes === null ? 'no limit' : fmtMinutes(guest.maxExpiryMinutes);
+  const maxFiles = guest.maxFiles === null ? 'no limit' : guest.maxFiles;
 
   const sizeInput = h('input', {
     type: 'number',
@@ -149,16 +156,25 @@ function guestCard(guest) {
     placeholder: 'Max file size (MB, empty = default)',
     value: guest.maxSizeMb ?? '',
   });
+  const filesInput = h('input', {
+    type: 'number',
+    min: '1',
+    step: '1',
+    placeholder: 'Max number of files (empty = no limit)',
+    value: guest.maxFiles ?? '',
+  });
   const picker = expiryPicker(guest.maxExpiryMinutes);
   const editor = h(
     'div',
     { class: 'editor row' },
     sizeInput,
+    filesInput,
     h('div', { class: 'field' }, h('span', { class: 'meta' }, 'Max expiry'), picker.el),
     button('Save', async () => {
       await api('PATCH', `/guests/${guest.id}`, {
         maxSizeMb: numberOrNull(sizeInput.value),
         maxExpiryMinutes: picker.value(),
+        maxFiles: numberOrNull(filesInput.value),
       });
       await loadGuests();
     }),
@@ -170,7 +186,7 @@ function guestCard(guest) {
     { class: 'card' },
     h('strong', {}, guest.name),
     h('div', { class: 'meta' }, `Created ${fmtDate(guest.createdAt)}`),
-    h('div', { class: 'meta' }, `Max file size: ${size} - Max expiry: ${expiry}`),
+    h('div', { class: 'meta' }, `Max file size: ${size} - Max expiry: ${expiry} - Max files: ${maxFiles}`),
     h(
       'div',
       { class: 'actions' },
@@ -210,6 +226,7 @@ if ($('guestForm')) {
         password: $('gpw').value,
         maxSizeMb: numberOrNull($('gsize').value),
         maxExpiryMinutes: createPicker.value(),
+        maxFiles: numberOrNull($('gfiles').value),
       });
       $('guestForm').reset();
       // reset() restores the picker's selects, but its custom fields must re-hide too.

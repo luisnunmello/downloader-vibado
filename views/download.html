@@ -3,6 +3,6 @@
 {{#if expires}}<p>Available until {{expires}} UTC</p>{{/if}}
 {{#if error}}<p class="err">{{error}}</p>{{/if}}
 <form method="post">
-  <input name="password" type="password" placeholder="Download password" required autofocus>
+  {{#if needsPassword}}<input name="password" type="password" placeholder="Download password" required autofocus>{{/if}}
   <button>Download</button>
 </form>

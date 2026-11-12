@@ -4,6 +4,7 @@ import { hashPassword } from './password.js';
 export interface GuestLimits {
   maxSizeMb: number | null; // null = server default
   maxExpiryMinutes: number | null; // null = no limit
+  maxFiles: number | null; // null = no limit
 }
 
 export interface Guest extends GuestLimits {
@@ -17,6 +18,7 @@ export interface GuestChanges {
   password?: string;
   maxSizeMb?: number | null;
   maxExpiryMinutes?: number | null;
+  maxFiles?: number | null;
 }
 
 /** Uploader label used for files uploaded with the master password. Guests cannot take this name. */
@@ -29,31 +31,35 @@ export async function listGuests(): Promise<Guest[]> {
     created_at: Date;
     max_size_mb: number | null;
     max_expiry_minutes: number | null;
-  }>('SELECT id, name, created_at, max_size_mb, max_expiry_minutes FROM guests ORDER BY lower(name)');
+    max_files: number | null;
+  }>('SELECT id, name, created_at, max_size_mb, max_expiry_minutes, max_files FROM guests ORDER BY lower(name)');
   return rows.map((r) => ({
     id: r.id,
     name: r.name,
     createdAt: r.created_at,
     maxSizeMb: r.max_size_mb,
     maxExpiryMinutes: r.max_expiry_minutes,
+    maxFiles: r.max_files,
   }));
 }
 
 export async function getGuestLimits(id: number): Promise<GuestLimits | null> {
-  const { rows } = await pool.query<{ max_size_mb: number | null; max_expiry_minutes: number | null }>(
-    'SELECT max_size_mb, max_expiry_minutes FROM guests WHERE id = $1',
-    [id],
-  );
-  return rows[0] ? { maxSizeMb: rows[0].max_size_mb, maxExpiryMinutes: rows[0].max_expiry_minutes } : null;
+  const { rows } = await pool.query<{
+    max_size_mb: number | null;
+    max_expiry_minutes: number | null;
+    max_files: number | null;
+  }>('SELECT max_size_mb, max_expiry_minutes, max_files FROM guests WHERE id = $1', [id]);
+  const r = rows[0];
+  return r ? { maxSizeMb: r.max_size_mb, maxExpiryMinutes: r.max_expiry_minutes, maxFiles: r.max_files } : null;
 }
 
 /** Throws a Postgres unique violation (code 23505) if the name is taken. */
 export async function createGuest(name: string, password: string, limits: GuestLimits): Promise<number> {
   const { salt, hash } = await hashPassword(password);
   const { rows } = await pool.query<{ id: number }>(
-    `INSERT INTO guests (name, salt, hash, max_size_mb, max_expiry_minutes)
-     VALUES ($1, $2, $3, $4, $5) RETURNING id`,
-    [name, salt, hash, limits.maxSizeMb, limits.maxExpiryMinutes],
+    `INSERT INTO guests (name, salt, hash, max_size_mb, max_expiry_minutes, max_files)
+     VALUES ($1, $2, $3, $4, $5, $6) RETURNING id`,
+    [name, salt, hash, limits.maxSizeMb, limits.maxExpiryMinutes, limits.maxFiles],
   );
   return rows[0].id;
 }
@@ -69,6 +75,7 @@ export async function updateGuest(id: number, changes: GuestChanges): Promise<bo
   }
   if (changes.maxSizeMb !== undefined) sets.push(`max_size_mb = ${param(changes.maxSizeMb)}`);
   if (changes.maxExpiryMinutes !== undefined) sets.push(`max_expiry_minutes = ${param(changes.maxExpiryMinutes)}`);
+  if (changes.maxFiles !== undefined) sets.push(`max_files = ${param(changes.maxFiles)}`);
   if (!sets.length) return true;
 
   const { rowCount } = await pool.query(`UPDATE guests SET ${sets.join(', ')} WHERE id = $1`, params);

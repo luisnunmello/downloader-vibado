@@ -22,7 +22,17 @@ function showLimits() {
   if (limits.maxExpiryMinutes !== null) {
     $('limits').textContent += ` Files are deleted after at most ${fmtMinutes(limits.maxExpiryMinutes)}.`;
   }
+  if (limits.maxFiles !== null) {
+    $('limits').textContent += ` You have used ${limits.filesUsed} of ${limits.maxFiles} files.`;
+  }
 }
+
+// Without a password the field is disabled and not required.
+function syncPasswordField() {
+  $('dpw').disabled = $('nopw').checked;
+  $('dpw').required = !$('nopw').checked;
+}
+$('nopw').addEventListener('change', syncPasswordField);
 
 function showResult(link, expiresAt) {
   const url = location.origin + link;
@@ -56,6 +66,7 @@ $('uploadForm').addEventListener('submit', async (e) => {
       method: 'PUT',
       headers: {
         'x-download-password': encodeURIComponent($('dpw').value),
+        'x-no-password': $('nopw').checked ? '1' : '0',
         'x-expires-minutes': $('exp').value,
         'x-filename': encodeURIComponent(file.name),
       },
@@ -66,6 +77,10 @@ $('uploadForm').addEventListener('submit', async (e) => {
     if (!res.ok) throw new Error(json.error || 'Upload failed');
     showResult(json.link, json.expiresAt);
     $('uploadForm').reset();
+    syncPasswordField();
+    // Refresh the "files used" count.
+    limits = await api('GET', '/limits').catch(() => limits);
+    showLimits();
   } catch (err) {
     showError(err.message);
   }
