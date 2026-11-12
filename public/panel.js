@@ -218,6 +218,21 @@ async function loadGuests() {
   $('guests').replaceChildren(...(guests.length ? guests.map(guestCard) : [h('p', {}, 'No guests yet.')]));
 }
 
+if ($('settingsForm')) {
+  const showSettings = (s) => {
+    $('smax').value = s.maxSizeMb;
+    $('smax').max = s.hardMaxSizeMb;
+  };
+  $('settingsForm').addEventListener('submit', (e) => {
+    e.preventDefault();
+    run(async () => {
+      showSettings(await api('PATCH', '/settings', { maxSizeMb: Number($('smax').value) }));
+      $('msg').textContent = 'Saved.';
+    });
+  });
+  run(async () => showSettings(await api('GET', '/settings')));
+}
+
 if ($('guestForm')) {
   let createPicker = expiryPicker(null);
   $('gexpBox').append(createPicker.el);

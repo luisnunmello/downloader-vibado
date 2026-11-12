@@ -5,6 +5,7 @@ import downloadRoutes from './routes/download.js';
 import fileRoutes from './routes/files.js';
 import guestRoutes from './routes/guests.js';
 import panelRoutes from './routes/panel.js';
+import settingsRoutes from './routes/settings.js';
 import { messagePage, render } from './views.js';
 
 export function createApp() {
@@ -29,6 +30,7 @@ export function createApp() {
   app.use(panelRoutes);
   app.use(fileRoutes);
   app.use(guestRoutes);
+  app.use(settingsRoutes);
   app.use(downloadRoutes);
   app.use((_req, res) => res.status(404).send(messagePage('Not found')));
 

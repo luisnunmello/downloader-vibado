@@ -18,7 +18,7 @@ function showLimits() {
   const maxMb = Math.floor(limits.maxSizeBytes / 1024 / 1024);
   $('limits').textContent = limits.sizeLimited
     ? `Maximum file size: ${maxMb} MB.`
-    : `No size limit for you (the server maximum is ${maxMb} MB).`;
+    : `Maximum file size: ${maxMb} MB (the server maximum).`;
   if (limits.maxExpiryMinutes !== null) {
     $('limits').textContent += ` Files are deleted after at most ${fmtMinutes(limits.maxExpiryMinutes)}.`;
   }

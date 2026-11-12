@@ -30,7 +30,7 @@ A small password-protected file sharing site built with Express, TypeScript and 
 
 **Limits**
 
-- The master has no file size limit from the app. The only cap is 1000 MB, because a file is stored in a single Postgres `bytea` value (1 GB maximum). Large uploads use a lot of memory: expect about twice the file size in RAM during the transfer.
+- The master has no per-user size limit. The **server maximum** applies to everyone, the master included. It is 1000 MB by default (the most a single Postgres `bytea` value holds) and the master can lower it in the app under "Server settings" on the admin page. Large uploads use a lot of memory: expect about twice the file size in RAM during the transfer.
 - Each guest can have a **max file size** (1-1000 MB). Without one, the server default `MAX_SIZE_MB` applies.
 - Each guest can have a **max expiry**, picked from common choices (10 minutes to 30 days) or a custom amount in minutes, hours or days. When set, the guest's files must expire within that time and "never" is not offered.
 - Each guest can have a **total storage quota** in MB: the combined size of all their files that have not expired. Deleting or expiring a file frees space. An upload that does not fit in what is left is refused, and the check is repeated atomically when the file is stored, so simultaneous uploads cannot exceed the quota. The upload page shows "Storage used: X of Y", and the admin page shows each guest's usage.
@@ -82,7 +82,7 @@ On PowerShell, set variables with `$env:NAME="value"` instead of `export`.
 | `DATABASE_URL` | `postgres://postgres:postgres@localhost:5432/downloader` | Postgres connection string |
 | `MASTER_PASSWORD` | none | Seeds the master password on first start |
 | `PORT` | `3000` | HTTP port |
-| `MAX_SIZE_MB` | `100` | Default maximum upload size in MB for guests without their own limit (the master is not affected; hard cap 1000) |
+| `MAX_SIZE_MB` | `100` | Default maximum upload size in MB for guests without their own limit (never above the server maximum, which the master sets in the app; hard cap 1000) |
 | `TRUST_PROXY` | unset | Set to `1` (or an Express trust-proxy value) when behind a reverse proxy |
 | `DB_PASSWORD` | `downloader` | Postgres password (Docker Compose only) |
 

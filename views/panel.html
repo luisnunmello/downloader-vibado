@@ -10,6 +10,13 @@
 <div id="files"></div>
 
 {{#if admin}}
+<h2>Server settings</h2>
+<p class="meta">The largest file anyone can upload, the master included. Guests with a lower limit keep it. Files are held in memory while transferring, so keep this reasonable on small servers.</p>
+<form id="settingsForm" class="row">
+  <input id="smax" type="number" min="1" max="1000" step="1" placeholder="Maximum file size (MB)" required>
+  <button>Save</button>
+</form>
+
 <h2>Guest uploaders</h2>
 <p class="meta">Guests sign in with their name and password, can upload, and can see and manage their own files only. Leave a limit empty for the default (size) or no limit (expiry, total storage). When a guest has a max expiry, their files cannot be permanent.</p>
 <form id="guestForm" class="row">
